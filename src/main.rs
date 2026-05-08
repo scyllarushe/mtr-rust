@@ -9,9 +9,18 @@ use std::time::{Duration, Instant};
 use mtr_rust::icmp::EchoRequest;
 
 const RECEIVE_TIMEOUT: Duration = Duration::from_secs(1);
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn main() {
-    let target = parse_target_argument();
+    match parse_command(env::args()) {
+        Command::Version => {
+            println!("mtr-rust {VERSION}");
+        }
+        Command::Probe(target) => run_probe(target),
+    }
+}
+
+fn run_probe(target: Ipv4Addr) {
 
     let socket_fd = match create_icmp_socket() {
         Ok(socket_fd) => socket_fd,
@@ -36,27 +45,39 @@ fn main() {
     }
 }
 
-fn parse_target_argument() -> Ipv4Addr {
-    let mut args = env::args();
+fn parse_command(args: impl IntoIterator<Item = String>) -> Command {
+    let mut args = args.into_iter();
     let program_name = args.next().unwrap_or_else(|| String::from("mtr-rust"));
 
-    let Some(target_arg) = args.next() else {
-        eprintln!("Usage: {program_name} <target-ipv4>");
-        process::exit(1);
+    let Some(first_arg) = args.next() else {
+        print_usage_and_exit(&program_name);
     };
 
     if args.next().is_some() {
-        eprintln!("Usage: {program_name} <target-ipv4>");
-        process::exit(1);
+        print_usage_and_exit(&program_name);
     }
 
-    match target_arg.parse::<Ipv4Addr>() {
-        Ok(target) => target,
-        Err(error) => {
-            eprintln!("Invalid IPv4 address '{target_arg}': {error}");
-            process::exit(1);
-        }
+    match first_arg.as_str() {
+        "--version" | "-V" => Command::Version,
+        _ => match first_arg.parse::<Ipv4Addr>() {
+            Ok(target) => Command::Probe(target),
+            Err(error) => {
+                eprintln!("Invalid IPv4 address '{first_arg}': {error}");
+                print_usage_and_exit(&program_name);
+            }
+        },
     }
+}
+
+fn print_usage_and_exit(program_name: &str) -> ! {
+    eprintln!("Usage: {program_name} <target-ipv4>");
+    eprintln!("       {program_name} --version");
+    process::exit(1);
+}
+
+enum Command {
+    Version,
+    Probe(Ipv4Addr),
 }
 
 fn create_icmp_socket() -> io::Result<RawFd> {
@@ -248,4 +269,27 @@ struct IcmpHeader {
     code: u8,
     identifier: u16,
     sequence_number: u16,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Command, parse_command};
+    use std::net::Ipv4Addr;
+
+    #[test]
+    fn parse_command_accepts_version_flag() {
+        let command = parse_command([String::from("mtr-rust"), String::from("--version")]);
+
+        assert!(matches!(command, Command::Version));
+    }
+
+    #[test]
+    fn parse_command_accepts_ipv4_target() {
+        let command = parse_command([String::from("mtr-rust"), String::from("8.8.8.8")]);
+
+        match command {
+            Command::Probe(target) => assert_eq!(target, Ipv4Addr::new(8, 8, 8, 8)),
+            Command::Version => panic!("expected probe command"),
+        }
+    }
 }

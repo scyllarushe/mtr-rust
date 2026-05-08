@@ -21,6 +21,12 @@ implement traceroute logic or `mtr` statistics yet.
 cargo build
 ```
 
+## Version
+
+```bash
+./target/debug/mtr-rust --version
+```
+
 ## Run
 
 Raw sockets usually require elevated privileges on macOS, so run the binary
