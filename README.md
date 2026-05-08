@@ -2,15 +2,16 @@
 
 A learning-focused Rust implementation of `mtr`.
 
-The current step is a small, educational `v0.5`:
+The current step is a small, educational `v0.6`:
 
 1. Build ICMP Echo Request packets in Rust.
 2. Send repeated IPv4 ICMP probes with a raw socket on macOS.
 3. Walk TTL values one hop at a time.
 4. Print a simple `mtr`-style summary table with per-hop packet loss and RTT
    statistics.
-5. Print startup and per-probe progress messages so it is clear what the
-   program is doing while it runs.
+5. Keep the default output quiet: a startup line plus the final statistics
+   table.
+6. Offer `--verbose` when you want to see each probe, reply, and timeout.
 
 It is still intentionally limited:
 
@@ -64,7 +65,15 @@ can see whether it is a permissions issue or something else. Each probe uses a
 `1` second timeout. If no reply arrives before that timeout, the probe counts
 as lost for the hop.
 
-While probing, the program prints progress lines such as:
+By default, the program prints a startup line and the final table only.
+
+If you want to watch each probe while learning or debugging, use `--verbose`:
+
+```bash
+sudo ./target/debug/mtr-rust 8.8.8.8 --count 5 --max-ttl 5 --verbose
+```
+
+Verbose mode prints progress lines such as:
 
 ```text
 Starting mtr-rust target=8.8.8.8 count=5 max_ttl=5 timeout=1.0s
@@ -77,6 +86,7 @@ Timeout ttl=1 seq=2
 Example output:
 
 ```text
+Starting mtr-rust target=8.8.8.8 count=10 max_ttl=30 timeout=1.0s
 Hop  Host            Loss%  Sent  Recv  Last   Avg   Best   Wrst
 1    192.168.1.1      0.0%    10    10    2.1    2.3    1.8    4.9
 2    10.0.0.1        10.0%    10     9    8.2    9.1    7.8   13.4
@@ -89,6 +99,7 @@ Hop  Host            Loss%  Sent  Recv  Last   Avg   Best   Wrst
 3. `v0.3`: Send one Echo Request and receive one reply.
 4. `v0.4`: Add a tiny `--version` command.
 5. `v0.5`: Add basic repeated probing and per-hop statistics.
-6. Next: Refresh the table continuously instead of printing it once.
-7. Later: Add reverse DNS lookups as an optional display feature.
-8. Later: Grow that into a small, readable `mtr` implementation.
+6. `v0.6`: Add quiet default output and opt-in verbose probe logging.
+7. Next: Refresh the table continuously instead of printing it once.
+8. Later: Add reverse DNS lookups as an optional display feature.
+9. Later: Grow that into a small, readable `mtr` implementation.

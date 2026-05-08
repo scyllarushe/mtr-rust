@@ -24,7 +24,7 @@ fn main() {
 }
 
 fn run_trace(config: ProbeConfig) {
-    eprintln!(
+    println!(
         "Starting mtr-rust target={} count={} max_ttl={} timeout={:.1}s",
         config.target,
         config.count,
@@ -72,7 +72,9 @@ fn collect_hop_reports(socket_fd: RawFd, config: &ProbeConfig) -> io::Result<Vec
 
         for _ in 0..config.count {
             report.statistics.record_probe_sent();
-            eprintln!("Probing ttl={ttl} seq={next_sequence}...");
+            if config.verbose {
+                eprintln!("Probing ttl={ttl} seq={next_sequence}...");
+            }
 
             let packet = EchoRequest::new(identifier, next_sequence, b"mtr-rust".to_vec()).to_bytes();
             let started_at = Instant::now();
@@ -83,16 +85,18 @@ fn collect_hop_reports(socket_fd: RawFd, config: &ProbeConfig) -> io::Result<Vec
                 receive_matching_reply(socket_fd, identifier, next_sequence, started_at, config.target)?
             {
                 report.record_reply(reply.source_ip, reply.rtt);
-                eprintln!(
-                    "Reply ttl={ttl} from {} rtt={}ms",
-                    reply.source_ip,
-                    format_duration_ms(reply.rtt)
-                );
+                if config.verbose {
+                    eprintln!(
+                        "Reply ttl={ttl} from {} rtt={}ms",
+                        reply.source_ip,
+                        format_duration_ms(reply.rtt)
+                    );
+                }
 
                 if reply.icmp_type == ECHO_REPLY_TYPE && reply.source_ip == config.target {
                     reached_target = true;
                 }
-            } else {
+            } else if config.verbose {
                 eprintln!("Timeout ttl={ttl} seq={next_sequence}");
             }
 
@@ -319,6 +323,7 @@ fn parse_command(args: impl IntoIterator<Item = String>) -> Command {
 
     let mut count = DEFAULT_PROBE_COUNT;
     let mut max_ttl = DEFAULT_MAX_TTL;
+    let mut verbose = false;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -358,6 +363,7 @@ fn parse_command(args: impl IntoIterator<Item = String>) -> Command {
                     }
                 }
             }
+            "--verbose" => verbose = true,
             _ => print_usage_and_exit(&program_name),
         }
     }
@@ -366,11 +372,14 @@ fn parse_command(args: impl IntoIterator<Item = String>) -> Command {
         target,
         count,
         max_ttl,
+        verbose,
     })
 }
 
 fn print_usage_and_exit(program_name: &str) -> ! {
-    eprintln!("Usage: {program_name} <target-ipv4> [--count <probes>] [--max-ttl <hops>]");
+    eprintln!(
+        "Usage: {program_name} <target-ipv4> [--count <probes>] [--max-ttl <hops>] [--verbose]"
+    );
     eprintln!("       {program_name} --version");
     process::exit(1);
 }
@@ -386,6 +395,7 @@ struct ProbeConfig {
     target: Ipv4Addr,
     count: u16,
     max_ttl: u8,
+    verbose: bool,
 }
 
 fn create_icmp_socket() -> io::Result<RawFd> {
@@ -552,12 +562,13 @@ mod tests {
                 target: Ipv4Addr::new(8, 8, 8, 8),
                 count: DEFAULT_PROBE_COUNT,
                 max_ttl: DEFAULT_MAX_TTL,
+                verbose: false,
             })
         );
     }
 
     #[test]
-    fn parse_command_accepts_custom_probe_count_and_max_ttl() {
+    fn parse_command_accepts_custom_probe_count_max_ttl_and_verbose() {
         let command = parse_command([
             String::from("mtr-rust"),
             String::from("8.8.8.8"),
@@ -565,6 +576,7 @@ mod tests {
             String::from("3"),
             String::from("--max-ttl"),
             String::from("5"),
+            String::from("--verbose"),
         ]);
 
         assert_eq!(
@@ -573,6 +585,7 @@ mod tests {
                 target: Ipv4Addr::new(8, 8, 8, 8),
                 count: 3,
                 max_ttl: 5,
+                verbose: true,
             })
         );
     }
