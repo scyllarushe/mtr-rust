@@ -7,7 +7,7 @@ use std::process;
 use std::time::{Duration, Instant};
 
 use mtr_rust::icmp::{
-    DESTINATION_UNREACHABLE_TYPE, ECHO_REPLY_TYPE, EchoRequest, TIME_EXCEEDED_TYPE,
+    ECHO_REPLY_TYPE, EchoRequest, parse_icmp_response,
 };
 use mtr_rust::stats::ProbeStatistics;
 
@@ -82,16 +82,17 @@ fn collect_hop_reports(socket_fd: RawFd, config: &ProbeConfig) -> io::Result<Vec
             send_icmp_echo_request(socket_fd, &destination, &packet, config.target)?;
 
             if let Some(reply) =
-                receive_matching_reply(socket_fd, identifier, next_sequence, started_at, config.target)?
+                receive_matching_reply(
+                    socket_fd,
+                    ttl,
+                    identifier,
+                    next_sequence,
+                    started_at,
+                    config.target,
+                    config.verbose,
+                )?
             {
                 report.record_reply(reply.source_ip, reply.rtt);
-                if config.verbose {
-                    eprintln!(
-                        "Reply ttl={ttl} from {} rtt={}ms",
-                        reply.source_ip,
-                        format_duration_ms(reply.rtt)
-                    );
-                }
 
                 if reply.icmp_type == ECHO_REPLY_TYPE && reply.source_ip == config.target {
                     reached_target = true;
@@ -145,10 +146,12 @@ fn send_icmp_echo_request(
 
 fn receive_matching_reply(
     socket_fd: RawFd,
+    ttl: u8,
     identifier: u16,
     sequence_number: u16,
     started_at: Instant,
     target: Ipv4Addr,
+    verbose: bool,
 ) -> io::Result<Option<MatchedReply>> {
     loop {
         let elapsed = started_at.elapsed();
@@ -188,80 +191,41 @@ fn receive_matching_reply(
         let reply = &receive_buffer[..received_bytes as usize];
         let source_ip = ipv4_from_sockaddr(&source);
 
-        let Some(parsed_reply) = parse_icmp_response(reply, source_ip) else {
+        let Some(parsed_reply) = parse_icmp_response(reply) else {
             continue;
         };
 
-        if parsed_reply.identifier != identifier || parsed_reply.sequence_number != sequence_number {
+        let matched =
+            parsed_reply.identifier == identifier && parsed_reply.sequence_number == sequence_number;
+
+        if verbose {
+            if matched {
+                eprintln!(
+                    "Reply type={} from {} ttl={} seq={} matched=yes rtt={}ms",
+                    parsed_reply.icmp_type,
+                    source_ip,
+                    ttl,
+                    parsed_reply.sequence_number,
+                    format_duration_ms(started_at.elapsed())
+                );
+            } else {
+                eprintln!(
+                    "Reply type={} from {} ttl={} seq={} matched=no",
+                    parsed_reply.icmp_type, source_ip, ttl, parsed_reply.sequence_number
+                );
+            }
+        }
+
+        if !matched {
             continue;
         }
 
         return Ok(Some(MatchedReply {
-            source_ip: parsed_reply.source_ip,
+            source_ip,
             icmp_type: parsed_reply.icmp_type,
             rtt: started_at.elapsed(),
         }));
     }
-}
-
-fn parse_icmp_response(packet: &[u8], source_ip: Ipv4Addr) -> Option<ParsedIcmpResponse> {
-    let outer_icmp = icmp_packet(packet)?;
-    let icmp_type = *outer_icmp.first()?;
-
-    match icmp_type {
-        ECHO_REPLY_TYPE => {
-            let (identifier, sequence_number) = icmp_identifier_and_sequence(outer_icmp)?;
-            Some(ParsedIcmpResponse {
-                source_ip,
-                icmp_type,
-                identifier,
-                sequence_number,
-            })
-        }
-        TIME_EXCEEDED_TYPE | DESTINATION_UNREACHABLE_TYPE => {
-            let embedded_packet = outer_icmp.get(8..)?;
-            let embedded_icmp = icmp_packet(embedded_packet)?;
-            let (identifier, sequence_number) = icmp_identifier_and_sequence(embedded_icmp)?;
-
-            Some(ParsedIcmpResponse {
-                source_ip,
-                icmp_type,
-                identifier,
-                sequence_number,
-            })
-        }
-        _ => None,
-    }
-}
-
-fn icmp_packet(packet: &[u8]) -> Option<&[u8]> {
-    let offset = icmp_offset(packet)?;
-    packet.get(offset..)
-}
-
-fn icmp_offset(packet: &[u8]) -> Option<usize> {
-    let first_byte = *packet.first()?;
-    if first_byte >> 4 == 4 {
-        let header_len = usize::from(first_byte & 0x0f) * 4;
-        if packet.len() < header_len {
-            return None;
-        }
-
-        Some(header_len)
-    } else {
-        Some(0)
-    }
-}
-
-fn icmp_identifier_and_sequence(packet: &[u8]) -> Option<(u16, u16)> {
-    if packet.len() < 8 {
-        return None;
-    }
-
-    Some((
-        u16::from_be_bytes([packet[4], packet[5]]),
-        u16::from_be_bytes([packet[6], packet[7]]),
-    ))
 }
 
 fn print_hop_table(reports: &[HopReport]) {
@@ -495,13 +459,6 @@ fn zeroed_sockaddr_in() -> libc::sockaddr_in {
 
 fn ipv4_from_sockaddr(address: &libc::sockaddr_in) -> Ipv4Addr {
     Ipv4Addr::from(u32::from_be(address.sin_addr.s_addr))
-}
-
-struct ParsedIcmpResponse {
-    source_ip: Ipv4Addr,
-    icmp_type: u8,
-    identifier: u16,
-    sequence_number: u16,
 }
 
 struct MatchedReply {

@@ -2,7 +2,7 @@
 
 A learning-focused Rust implementation of `mtr`.
 
-The current step is a small, educational `v0.6`:
+The current step is a small, educational `v0.7`:
 
 1. Build ICMP Echo Request packets in Rust.
 2. Send repeated IPv4 ICMP probes with a raw socket on macOS.
@@ -12,6 +12,8 @@ The current step is a small, educational `v0.6`:
 5. Keep the default output quiet: a startup line plus the final statistics
    table.
 6. Offer `--verbose` when you want to see each probe, reply, and timeout.
+7. Match ICMP replies more carefully by identifier and sequence number,
+   including `Time Exceeded` packets that contain the embedded original probe.
 
 It is still intentionally limited:
 
@@ -78,7 +80,7 @@ Verbose mode prints progress lines such as:
 ```text
 Starting mtr-rust target=8.8.8.8 count=5 max_ttl=5 timeout=1.0s
 Probing ttl=1 seq=1...
-Reply ttl=1 from 192.168.1.1 rtt=2.3ms
+Reply type=11 from 192.168.1.1 ttl=1 seq=1 matched=yes rtt=2.3ms
 Probing ttl=1 seq=2...
 Timeout ttl=1 seq=2
 ```
@@ -100,6 +102,8 @@ Hop  Host            Loss%  Sent  Recv  Last   Avg   Best   Wrst
 4. `v0.4`: Add a tiny `--version` command.
 5. `v0.5`: Add basic repeated probing and per-hop statistics.
 6. `v0.6`: Add quiet default output and opt-in verbose probe logging.
-7. Next: Refresh the table continuously instead of printing it once.
-8. Later: Add reverse DNS lookups as an optional display feature.
-9. Later: Grow that into a small, readable `mtr` implementation.
+7. `v0.7`: Make ICMP reply matching more robust and test `Time Exceeded`
+   parsing.
+8. Next: Refresh the table continuously instead of printing it once.
+9. Later: Add reverse DNS lookups as an optional display feature.
+10. Later: Grow that into a small, readable `mtr` implementation.
