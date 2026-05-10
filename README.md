@@ -12,7 +12,7 @@ git clone https://github.com/scyllarushe/rttmeter
 cd rttmeter
 ```
 
-The current step is a small, educational `v0.15`:
+The current step is a small, educational `v0.16`:
 
 1. Build ICMP Echo Request packets in Rust.
 2. Send repeated IPv4 ICMP probes with a raw socket on macOS.
@@ -37,6 +37,7 @@ The current step is a small, educational `v0.15`:
     explicit runtime overrides.
 15. Add RTT stability metrics with standard deviation and jitter.
 16. Show auto-TTL discovery progress before switching to monitoring.
+17. Add RTT trend sparklines and simple network mood/status messages.
 
 It is still intentionally limited:
 
@@ -197,6 +198,10 @@ Timeout ttl=1 seq=2
 
 `StDev` shows how spread out RTT values are from the average.
 `Jttr` shows how much RTT changes between consecutive replies.
+`Trend` shows a compact sparkline from recent RTT samples for that hop.
+
+After each monitoring table, `rttmeter` also prints a simple status line such
+as `calm`, `spiky`, `jittery`, or `lossy`.
 
 Example output:
 
@@ -208,17 +213,19 @@ ttl=2   10.0.0.1         8.4ms
 ttl=3   *
 ttl=12  8.8.8.8         34.2ms
 Target reached at ttl=12. Switching to target monitoring.
-Hop  Host            Loss%  Sent  Recv  Last   Avg   Best   Wrst  StDev   Jttr
-12   8.8.8.8          0.0%     1     1   34.2   34.2   34.2   34.2    0.0    0.0
+Hop  Host            Loss%  Sent  Recv  Last   Avg   Best   Wrst  StDev   Jttr Trend
+12   8.8.8.8          0.0%     1     1   34.2   34.2   34.2   34.2    0.0    0.0 ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+Status: calm - RTT is stable
 ```
 
 Trace mode example:
 
 ```text
 Starting rttmeter target=8.8.8.8 resolved=8.8.8.8 count=1 max_ttl=30 timeout=1.0s interval=0.5s mode=trace run=continuous output=scroll
-Hop  Host            Loss%  Sent  Recv  Last   Avg   Best   Wrst  StDev   Jttr
-1    192.168.1.1      0.0%     1     1    2.1    2.1    2.1    2.1    0.0    0.0
-2    10.0.0.1        100.0%     1     0      -      -      -      -      -      -
+Hop  Host            Loss%  Sent  Recv  Last   Avg   Best   Wrst  StDev   Jttr Trend
+1    192.168.1.1      0.0%     1     1    2.1    2.1    2.1    2.1    0.0    0.0 ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+2    10.0.0.1        100.0%     1     0      -      -      -      -      -      - -
+Status: lossy - packet loss observed
 ```
 
 Usage:
@@ -254,6 +261,6 @@ Output styles:
 13. `v0.13`: Make auto target-TTL discovery the default and add `--trace`.
 14. `v0.14`: Add RTT stability metrics with `StDev` and `Jttr`.
 15. `v0.15`: Show auto-TTL discovery progress before monitoring.
-16. Next: Improve the in-place refresh presentation further.
-17. Later: Add reverse DNS lookups as an optional display feature.
-18. Later: Grow that into a small, readable `mtr` implementation.
+16. `v0.16`: Add RTT trend sparklines and simple network mood/status messages.
+17. Later: Add optional reverse DNS so the path can show names when that helps more than raw IPs.
+18. Later: Keep evolving `rttmeter` into a compact, readable network path monitor you can actually enjoy using.

@@ -69,6 +69,10 @@ impl ProbeStatistics {
         self.worst_rtt_ms
     }
 
+    pub fn rtt_samples_ms(&self) -> &[f64] {
+        &self.rtt_samples_ms
+    }
+
     pub fn stdev_rtt_ms(&self) -> Option<f64> {
         match self.rtt_samples_ms.len() {
             0 => None,

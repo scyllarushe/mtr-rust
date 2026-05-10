@@ -17,6 +17,7 @@ const DEFAULT_PROBE_COUNT: u16 = 1;
 const DEFAULT_MAX_TTL: u8 = 30;
 const DEFAULT_INTERVAL: Duration = Duration::from_millis(500);
 const PER_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+const TREND_WIDTH: usize = 16;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn main() {
@@ -85,13 +86,19 @@ fn run_continuous_trace(socket_fd: RawFd, config: &ProbeConfig) -> io::Result<()
     let mut next_sequence = 1u16;
     let mut reports = prepare_reports(socket_fd, config, &mut next_sequence)?;
     let mut previous_table_lines = None;
+    let mut previous_snapshots = Vec::new();
 
     loop {
         run_probe_sweep(socket_fd, config, &mut reports, &mut next_sequence)?;
 
         let mut visible_reports = reports.clone();
         truncate_after_target(&mut visible_reports, config.resolved_target);
-        let table = render_hop_table(&visible_reports);
+        let monitor_block = render_monitor_block(&visible_reports);
+        let events = if should_emit_events(config) {
+            classify_events(&visible_reports, &previous_snapshots)
+        } else {
+            Vec::new()
+        };
 
         if should_use_live_refresh(config) {
             let stdout = io::stdout();
@@ -101,14 +108,19 @@ fn run_continuous_trace(socket_fd: RawFd, config: &ProbeConfig) -> io::Result<()
                 write!(handle, "\x1b[{line_count}A\x1b[J")?;
             }
 
-            write!(handle, "{table}")?;
+            write!(handle, "{monitor_block}")?;
             handle.flush()?;
-            previous_table_lines = Some(count_lines(&table));
+            previous_table_lines = Some(count_lines(&monitor_block));
         } else {
             println!();
-            print!("{table}");
+            print!("{monitor_block}");
+
+            for event in &events {
+                println!("Event: {event}");
+            }
         }
 
+        previous_snapshots = capture_event_snapshots(&visible_reports);
         thread::sleep(config.interval);
     }
 }
@@ -203,9 +215,10 @@ fn run_probe_sweep(
         set_socket_ttl(socket_fd, ttl)?;
 
         let mut reached_target = false;
+        report.begin_sweep();
 
         for _ in 0..config.count {
-            report.statistics.record_probe_sent();
+            report.record_probe_sent();
             if config.verbose {
                 eprintln!("Probing ttl={ttl} seq={}...", *next_sequence);
             }
@@ -365,7 +378,7 @@ fn receive_matching_reply(
 }
 
 fn print_hop_table(reports: &[HopReport]) {
-    print!("{}", render_hop_table(reports));
+    print!("{}", render_monitor_block(reports));
 }
 
 fn format_rtt(rtt_ms: Option<f64>) -> String {
@@ -395,13 +408,13 @@ fn render_discovery_line(ttl: u8, source_ip: Option<Ipv4Addr>, rtt: Option<Durat
 fn render_hop_table(reports: &[HopReport]) -> String {
     let mut output = String::new();
     output.push_str(&format!(
-        "{:<4} {:<15} {:>6} {:>5} {:>5} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6}\n",
-        "Hop", "Host", "Loss%", "Sent", "Recv", "Last", "Avg", "Best", "Wrst", "StDev", "Jttr"
+        "{:<4} {:<15} {:>6} {:>5} {:>5} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:<16}\n",
+        "Hop", "Host", "Loss%", "Sent", "Recv", "Last", "Avg", "Best", "Wrst", "StDev", "Jttr", "Trend"
     ));
 
     for report in reports {
         output.push_str(&format!(
-            "{:<4} {:<15} {:>6} {:>5} {:>5} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6}\n",
+            "{:<4} {:<15} {:>6} {:>5} {:>5} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:<16}\n",
             report.ttl,
             report.host_label(),
             format!("{:.1}%", report.statistics.loss_percentage()),
@@ -413,10 +426,131 @@ fn render_hop_table(reports: &[HopReport]) -> String {
             format_rtt(report.statistics.worst_rtt_ms()),
             format_rtt(report.statistics.stdev_rtt_ms()),
             format_rtt(report.statistics.jitter_rtt_ms()),
+            render_sparkline(report.statistics.rtt_samples_ms(), TREND_WIDTH),
         ));
     }
 
     output
+}
+
+fn render_monitor_block(reports: &[HopReport]) -> String {
+    let mut output = render_hop_table(reports);
+    output.push_str(&render_status_line(reports));
+    output.push('\n');
+    output
+}
+
+fn render_status_line(reports: &[HopReport]) -> String {
+    let status = classify_status(reports);
+    format!("Status: {} - {}", status.label(), status.message())
+}
+
+fn render_sparkline(samples: &[f64], width: usize) -> String {
+    const BLOCKS: &[char; 8] = &['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
+    if samples.is_empty() || width == 0 {
+        return String::from("-");
+    }
+
+    let min = samples
+        .iter()
+        .copied()
+        .fold(f64::INFINITY, f64::min);
+    let max = samples
+        .iter()
+        .copied()
+        .fold(f64::NEG_INFINITY, f64::max);
+
+    if (max - min).abs() < f64::EPSILON {
+        return std::iter::repeat_n('▄', width).collect();
+    }
+
+    let mut sparkline = String::with_capacity(width);
+    for index in 0..width {
+        let sample_index = index * samples.len() / width;
+        let sample = samples[sample_index.min(samples.len() - 1)];
+        let normalized = ((sample - min) / (max - min)).clamp(0.0, 1.0);
+        let block_index = (normalized * (BLOCKS.len() - 1) as f64).round() as usize;
+        sparkline.push(BLOCKS[block_index]);
+    }
+
+    sparkline
+}
+
+fn should_emit_events(config: &ProbeConfig) -> bool {
+    config.continuous && !should_use_live_refresh(config)
+}
+
+fn classify_status(reports: &[HopReport]) -> MonitorStatus {
+    if reports
+        .iter()
+        .any(|report| report.statistics.loss_percentage() > 5.0)
+    {
+        return MonitorStatus::Lossy;
+    }
+
+    if reports
+        .iter()
+        .any(|report| report.statistics.jitter_rtt_ms().unwrap_or(0.0) > 50.0)
+    {
+        return MonitorStatus::Jittery;
+    }
+
+    if reports.iter().any(HopReport::has_latency_spike) {
+        return MonitorStatus::Spiky;
+    }
+
+    MonitorStatus::Calm
+}
+
+fn capture_event_snapshots(reports: &[HopReport]) -> Vec<HopEventSnapshot> {
+    reports
+        .iter()
+        .map(|report| HopEventSnapshot {
+            ttl: report.ttl,
+            had_loss_ever: report.statistics.loss_percentage() > 0.0,
+            worst_rtt_ms: report.statistics.worst_rtt_ms(),
+            spiky: report.has_latency_spike(),
+            sweep_had_loss: report.sweep_had_loss(),
+        })
+        .collect()
+}
+
+fn classify_events(reports: &[HopReport], previous_snapshots: &[HopEventSnapshot]) -> Vec<String> {
+    let mut events = Vec::new();
+
+    for report in reports {
+        let previous = previous_snapshots
+            .iter()
+            .find(|snapshot| snapshot.ttl == report.ttl);
+
+        if report.sweep_had_loss() && previous.is_none_or(|snapshot| !snapshot.had_loss_ever) {
+            events.push(format!("hop {} saw its first packet loss", report.ttl));
+        }
+
+        if report.sweep_fully_replied()
+            && previous.is_some_and(|snapshot| snapshot.sweep_had_loss)
+        {
+            events.push(format!("hop {} recovered after loss", report.ttl));
+        }
+
+        if let Some(current_worst) = report.statistics.worst_rtt_ms() {
+            if let Some(previous_worst) = previous.and_then(|snapshot| snapshot.worst_rtt_ms) {
+                if current_worst > previous_worst + 0.05 {
+                    events.push(format!(
+                        "hop {} set a new worst RTT at {:.1}ms",
+                        report.ttl, current_worst
+                    ));
+                }
+            }
+        }
+
+        if report.has_latency_spike() && previous.is_some_and(|snapshot| !snapshot.spiky) {
+            events.push(format!("hop {} latency spike detected", report.ttl));
+        }
+    }
+
+    events
 }
 
 fn count_lines(rendered_table: &str) -> u16 {
@@ -770,11 +904,50 @@ struct MatchedReply {
     rtt: Duration,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MonitorStatus {
+    Calm,
+    Spiky,
+    Jittery,
+    Lossy,
+}
+
+impl MonitorStatus {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Calm => "calm",
+            Self::Spiky => "spiky",
+            Self::Jittery => "jittery",
+            Self::Lossy => "lossy",
+        }
+    }
+
+    fn message(self) -> &'static str {
+        match self {
+            Self::Calm => "RTT is stable",
+            Self::Spiky => "latency spike detected",
+            Self::Jittery => "RTT is moving around",
+            Self::Lossy => "packet loss observed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HopEventSnapshot {
+    ttl: u8,
+    had_loss_ever: bool,
+    worst_rtt_ms: Option<f64>,
+    spiky: bool,
+    sweep_had_loss: bool,
+}
+
 #[derive(Clone)]
 struct HopReport {
     ttl: u8,
     host: Option<Ipv4Addr>,
     statistics: ProbeStatistics,
+    sweep_sent: u16,
+    sweep_received: u16,
 }
 
 impl HopReport {
@@ -783,7 +956,19 @@ impl HopReport {
             ttl,
             host: None,
             statistics: ProbeStatistics::default(),
+            sweep_sent: 0,
+            sweep_received: 0,
         }
+    }
+
+    fn begin_sweep(&mut self) {
+        self.sweep_sent = 0;
+        self.sweep_received = 0;
+    }
+
+    fn record_probe_sent(&mut self) {
+        self.sweep_sent += 1;
+        self.statistics.record_probe_sent();
     }
 
     fn record_reply(&mut self, source_ip: Ipv4Addr, rtt: Duration) {
@@ -791,6 +976,7 @@ impl HopReport {
             self.host = Some(source_ip);
         }
 
+        self.sweep_received += 1;
         self.statistics.record_reply(rtt);
     }
 
@@ -799,16 +985,48 @@ impl HopReport {
             .map(|ip| ip.to_string())
             .unwrap_or_else(|| String::from("*"))
     }
+
+    fn sweep_had_loss(&self) -> bool {
+        self.sweep_sent > self.sweep_received
+    }
+
+    fn sweep_fully_replied(&self) -> bool {
+        self.sweep_sent > 0 && self.sweep_sent == self.sweep_received
+    }
+
+    fn has_latency_spike(&self) -> bool {
+        let Some(last) = self.statistics.last_rtt_ms() else {
+            return false;
+        };
+        let Some(avg) = self.statistics.average_rtt_ms() else {
+            return false;
+        };
+
+        last > avg * 1.8 && last - avg > 30.0
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        Command, DEFAULT_INTERVAL, DEFAULT_MAX_TTL, DEFAULT_PROBE_COUNT, ProbeConfig,
-        parse_command, render_discovery_line,
+        Command, DEFAULT_INTERVAL, DEFAULT_MAX_TTL, DEFAULT_PROBE_COUNT, HopReport,
+        MonitorStatus, ProbeConfig, capture_event_snapshots, classify_events, classify_status,
+        parse_command, render_discovery_line, render_sparkline,
     };
     use std::net::Ipv4Addr;
     use std::time::Duration;
+
+    fn report_from_rtts(ttl: u8, rtts_ms: &[u64]) -> HopReport {
+        let mut report = HopReport::new(ttl);
+        report.begin_sweep();
+
+        for rtt_ms in rtts_ms {
+            report.record_probe_sent();
+            report.record_reply(Ipv4Addr::new(8, 8, 8, 8), Duration::from_millis(*rtt_ms));
+        }
+
+        report
+    }
 
     #[test]
     fn parse_command_accepts_version_flag() {
@@ -986,5 +1204,49 @@ mod tests {
             "ttl=3   10.136.70.179   22.8ms"
         );
         assert_eq!(render_discovery_line(2, None, None), "ttl=2   *");
+    }
+
+    #[test]
+    fn sparkline_formats_compact_trend_blocks() {
+        assert_eq!(render_sparkline(&[], 8), "-");
+        assert_eq!(render_sparkline(&[10.0, 20.0, 30.0, 40.0], 4), "▁▃▆█");
+    }
+
+    #[test]
+    fn status_classification_prefers_loss_then_jitter_then_spike() {
+        let mut lossy = HopReport::new(1);
+        lossy.begin_sweep();
+        lossy.record_probe_sent();
+        lossy.record_probe_sent();
+        lossy.record_reply(Ipv4Addr::new(1, 1, 1, 1), Duration::from_millis(10));
+        assert_eq!(classify_status(&[lossy]), MonitorStatus::Lossy);
+
+        let jittery = report_from_rtts(2, &[10, 110, 20]);
+        assert_eq!(classify_status(&[jittery]), MonitorStatus::Jittery);
+
+        let spiky = report_from_rtts(3, &[10, 10, 100]);
+        assert_eq!(classify_status(&[spiky]), MonitorStatus::Spiky);
+
+        let calm = report_from_rtts(4, &[20, 21, 20]);
+        assert_eq!(classify_status(&[calm]), MonitorStatus::Calm);
+    }
+
+    #[test]
+    fn event_classification_detects_loss_and_recovery() {
+        let mut loss_report = HopReport::new(5);
+        loss_report.begin_sweep();
+        loss_report.record_probe_sent();
+        let events = classify_events(&[loss_report.clone()], &[]);
+        assert!(events.iter().any(|event| event.contains("first packet loss")));
+
+        let mut recovered = report_from_rtts(5, &[12]);
+        recovered.begin_sweep();
+        recovered.record_probe_sent();
+        recovered.record_reply(Ipv4Addr::new(8, 8, 8, 8), Duration::from_millis(12));
+        let previous = capture_event_snapshots(&[loss_report]);
+        let recovery_events = classify_events(&[recovered], &previous);
+        assert!(recovery_events
+            .iter()
+            .any(|event| event.contains("recovered after loss")));
     }
 }
