@@ -383,7 +383,7 @@ fn print_hop_table(reports: &[HopReport]) {
 
 fn format_rtt(rtt_ms: Option<f64>) -> String {
     match rtt_ms {
-        Some(value) => format!("{value:.1}"),
+        Some(value) => format!("{value:.1}ms"),
         None => String::from("-"),
     }
 }
@@ -408,13 +408,13 @@ fn render_discovery_line(ttl: u8, source_ip: Option<Ipv4Addr>, rtt: Option<Durat
 fn render_hop_table(reports: &[HopReport]) -> String {
     let mut output = String::new();
     output.push_str(&format!(
-        "{:<4} {:<15} {:>6} {:>5} {:>5} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:<16}\n",
+        "{:<4} {:<15} {:>6} {:>5} {:>5} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:<16}\n",
         "Hop", "Host", "Loss%", "Sent", "Recv", "Last", "Avg", "Best", "Wrst", "StDev", "Jttr", "Trend"
     ));
 
     for report in reports {
         output.push_str(&format!(
-            "{:<4} {:<15} {:>6} {:>5} {:>5} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:<16}\n",
+            "{:<4} {:<15} {:>6} {:>5} {:>5} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:<16}\n",
             report.ttl,
             report.host_label(),
             format!("{:.1}%", report.statistics.loss_percentage()),
@@ -1011,7 +1011,7 @@ mod tests {
     use super::{
         Command, DEFAULT_INTERVAL, DEFAULT_MAX_TTL, DEFAULT_PROBE_COUNT, HopReport,
         MonitorStatus, ProbeConfig, capture_event_snapshots, classify_events, classify_status,
-        parse_command, render_discovery_line, render_sparkline,
+        format_rtt, parse_command, render_discovery_line, render_sparkline,
     };
     use std::net::Ipv4Addr;
     use std::time::Duration;
@@ -1204,6 +1204,13 @@ mod tests {
             "ttl=3   10.136.70.179   22.8ms"
         );
         assert_eq!(render_discovery_line(2, None, None), "ttl=2   *");
+    }
+
+    #[test]
+    fn rtt_values_render_with_ms_units_and_missing_values_stay_plain() {
+        assert_eq!(format_rtt(Some(34.2)), "34.2ms");
+        assert_eq!(format_rtt(Some(0.0)), "0.0ms");
+        assert_eq!(format_rtt(None), "-");
     }
 
     #[test]
