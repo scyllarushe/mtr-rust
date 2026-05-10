@@ -52,7 +52,7 @@ with `sudo`:
 sudo ./target/debug/mtr-rust 8.8.8.8
 ```
 
-By default, the program sends `10` probes per hop:
+By default, the program sends `1` probe:
 
 ```bash
 sudo ./target/debug/mtr-rust 8.8.8.8
@@ -75,7 +75,7 @@ sudo ./target/debug/mtr-rust 8.8.8.8 --count 5 --continuous
 ```
 
 In continuous mode, the default output style is a live refreshed table.
-The default interval between sweeps is `1.0` seconds.
+The default interval between sweeps is `0.5` seconds.
 
 If you want the older scrolling behavior instead, add `--scroll`:
 
@@ -119,9 +119,10 @@ In once mode, `--interval` does not change behavior.
 If automatic target TTL discovery fails, try `--trace --max-ttl <n>`.
 
 If socket creation fails, the program prints the operating system error so you
-can see whether it is a permissions issue or something else. Each probe uses a
-`1` second timeout. If no reply arrives before that timeout, the probe counts
-as lost for the hop.
+can see whether it is a permissions issue or something else. The default count
+is `1`, the default timeout is `1.0` second, and the default interval is
+`0.5` seconds. If no reply arrives before the timeout, the probe counts as
+lost for the hop.
 
 By default, the program prints a startup line and the final table only.
 
@@ -143,7 +144,7 @@ of live refresh so the per-probe logs stay readable.
 Verbose mode prints progress lines such as:
 
 ```text
-Starting mtr-rust target=example.com resolved=93.184.216.34 count=5 max_ttl=30 timeout=1.0s interval=1.0s mode=auto-ttl
+Starting mtr-rust target=example.com resolved=93.184.216.34 count=5 timeout=1.0s interval=0.5s mode=auto-ttl
 Probing ttl=1 seq=1...
 Reply type=11 from 192.168.1.1 ttl=1 seq=1 matched=yes rtt=2.3ms
 Probing ttl=1 seq=2...
@@ -153,18 +154,18 @@ Timeout ttl=1 seq=2
 Example output:
 
 ```text
-Starting mtr-rust target=8.8.8.8 resolved=8.8.8.8 count=10 max_ttl=30 timeout=1.0s interval=1.0s mode=auto-ttl
+Starting mtr-rust target=8.8.8.8 resolved=8.8.8.8 count=1 timeout=1.0s interval=0.5s mode=auto-ttl
 Hop  Host            Loss%  Sent  Recv  Last   Avg   Best   Wrst
-12   8.8.8.8          0.0%    10    10   34.2   33.8   31.7   36.5
+12   8.8.8.8          0.0%     1     1   34.2   34.2   34.2   34.2
 ```
 
 Trace mode example:
 
 ```text
-Starting mtr-rust target=8.8.8.8 resolved=8.8.8.8 count=10 max_ttl=30 timeout=1.0s interval=1.0s mode=trace
+Starting mtr-rust target=8.8.8.8 resolved=8.8.8.8 count=1 max_ttl=30 timeout=1.0s interval=0.5s mode=trace
 Hop  Host            Loss%  Sent  Recv  Last   Avg   Best   Wrst
-1    192.168.1.1      0.0%    10    10    2.1    2.3    1.8    4.9
-2    10.0.0.1        10.0%    10     9    8.2    9.1    7.8   13.4
+1    192.168.1.1      0.0%     1     1    2.1    2.1    2.1    2.1
+2    10.0.0.1        100.0%     1     0      -      -      -      -
 ```
 
 Usage:

@@ -13,9 +13,9 @@ use mtr_rust::icmp::{
 };
 use mtr_rust::stats::ProbeStatistics;
 
-const DEFAULT_PROBE_COUNT: u16 = 10;
+const DEFAULT_PROBE_COUNT: u16 = 1;
 const DEFAULT_MAX_TTL: u8 = 30;
-const DEFAULT_INTERVAL: Duration = Duration::from_secs(1);
+const DEFAULT_INTERVAL: Duration = Duration::from_millis(500);
 const PER_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -28,11 +28,11 @@ fn main() {
 
 fn run_trace(config: ProbeConfig) {
     println!(
-        "Starting mtr-rust target={} resolved={} count={} {} timeout={:.1}s interval={:.1}s mode={}",
+        "Starting mtr-rust target={} resolved={} count={}{} timeout={:.1}s interval={:.1}s mode={}",
         config.original_target,
         config.resolved_target,
         config.count,
-        ttl_display(&config),
+        startup_scope_display(&config),
         PER_PROBE_TIMEOUT.as_secs_f64(),
         config.interval.as_secs_f64(),
         mode_name(&config)
@@ -401,10 +401,11 @@ fn should_use_live_refresh(config: &ProbeConfig) -> bool {
     config.continuous && !config.scroll && !config.verbose
 }
 
-fn ttl_display(config: &ProbeConfig) -> String {
+fn startup_scope_display(config: &ProbeConfig) -> String {
     match selected_mode(config) {
-        ProbeMode::SingleTtl(ttl) => format!("ttl={ttl}"),
-        ProbeMode::AutoTtl | ProbeMode::Trace => format!("max_ttl={}", config.max_ttl),
+        ProbeMode::SingleTtl(ttl) => format!(" ttl={ttl}"),
+        ProbeMode::AutoTtl => String::new(),
+        ProbeMode::Trace => format!(" max_ttl={}", config.max_ttl),
     }
 }
 
