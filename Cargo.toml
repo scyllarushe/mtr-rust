@@ -1,6 +1,6 @@
 [package]
-name = "mtr-rust"
-version = "0.13.0"
+name = "rttmeter"
+version = "0.15.0"
 edition = "2024"
 
 [dependencies]

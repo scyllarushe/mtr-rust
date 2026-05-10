@@ -8,10 +8,10 @@ use std::process;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use mtr_rust::icmp::{
+use rttmeter::icmp::{
     ECHO_REPLY_TYPE, EchoRequest, parse_icmp_response,
 };
-use mtr_rust::stats::ProbeStatistics;
+use rttmeter::stats::ProbeStatistics;
 
 const DEFAULT_PROBE_COUNT: u16 = 1;
 const DEFAULT_MAX_TTL: u8 = 30;
@@ -21,14 +21,14 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn main() {
     match parse_command(env::args()) {
-        Command::Version => println!("mtr-rust {VERSION}"),
+        Command::Version => println!("rttmeter {VERSION}"),
         Command::Trace(config) => run_trace(config),
     }
 }
 
 fn run_trace(config: ProbeConfig) {
     println!(
-        "Starting mtr-rust target={} resolved={} count={}{} timeout={:.1}s interval={:.1}s mode={} run={} output={}",
+        "Starting rttmeter target={} resolved={} count={}{} timeout={:.1}s interval={:.1}s mode={} run={} output={}",
         config.original_target,
         config.resolved_target,
         config.count,
@@ -136,6 +136,8 @@ fn discover_target_ttl(
     let identifier = process::id() as u16;
     let destination = ipv4_sockaddr(config.resolved_target);
 
+    println!("Discovering target TTL up to {}...", config.max_ttl);
+
     for ttl in 1..=config.max_ttl {
         set_socket_ttl(socket_fd, ttl)?;
 
@@ -143,7 +145,7 @@ fn discover_target_ttl(
             eprintln!("Probing ttl={ttl} seq={}...", *next_sequence);
         }
 
-        let packet = EchoRequest::new(identifier, *next_sequence, b"mtr-rust".to_vec()).to_bytes();
+        let packet = EchoRequest::new(identifier, *next_sequence, b"rttmeter".to_vec()).to_bytes();
         let started_at = Instant::now();
 
         send_icmp_echo_request(socket_fd, &destination, &packet, config.resolved_target)?;
@@ -157,15 +159,22 @@ fn discover_target_ttl(
             config.resolved_target,
             config.verbose,
         )? {
+            println!("{}", render_discovery_line(ttl, Some(reply.source_ip), Some(reply.rtt)));
+
             if reply.icmp_type == ECHO_REPLY_TYPE && reply.source_ip == config.resolved_target {
+                println!("Target reached at ttl={ttl}. Switching to target monitoring.");
                 *next_sequence = next_sequence.wrapping_add(1);
                 if *next_sequence == 0 {
                     *next_sequence = 1;
                 }
                 return Ok(ttl);
             }
-        } else if config.verbose {
-            eprintln!("Timeout ttl={ttl} seq={}", *next_sequence);
+        } else {
+            println!("{}", render_discovery_line(ttl, None, None));
+
+            if config.verbose {
+                eprintln!("Timeout ttl={ttl} seq={}", *next_sequence);
+            }
         }
 
         *next_sequence = next_sequence.wrapping_add(1);
@@ -175,8 +184,8 @@ fn discover_target_ttl(
     }
 
     Err(io::Error::other(format!(
-        "Could not discover target TTL within max_ttl={}. Try --trace --max-ttl {}",
-        config.max_ttl, config.max_ttl
+        "Could not reach target within max_ttl={}. Try --trace --max-ttl <n>.",
+        config.max_ttl
     )))
 }
 
@@ -201,7 +210,7 @@ fn run_probe_sweep(
                 eprintln!("Probing ttl={ttl} seq={}...", *next_sequence);
             }
 
-            let packet = EchoRequest::new(identifier, *next_sequence, b"mtr-rust".to_vec()).to_bytes();
+            let packet = EchoRequest::new(identifier, *next_sequence, b"rttmeter".to_vec()).to_bytes();
             let started_at = Instant::now();
 
             send_icmp_echo_request(socket_fd, &destination, &packet, config.resolved_target)?;
@@ -370,16 +379,29 @@ fn format_duration_ms(duration: Duration) -> String {
     format!("{:.1}", duration.as_secs_f64() * 1000.0)
 }
 
+fn render_discovery_line(ttl: u8, source_ip: Option<Ipv4Addr>, rtt: Option<Duration>) -> String {
+    match (source_ip, rtt) {
+        (Some(source_ip), Some(rtt)) => {
+            format!(
+                "ttl={ttl:<2}  {:<14}  {}ms",
+                source_ip,
+                format_duration_ms(rtt)
+            )
+        }
+        _ => format!("ttl={ttl:<2}  *"),
+    }
+}
+
 fn render_hop_table(reports: &[HopReport]) -> String {
     let mut output = String::new();
     output.push_str(&format!(
-        "{:<4} {:<15} {:>6} {:>5} {:>5} {:>6} {:>6} {:>6} {:>6}\n",
-        "Hop", "Host", "Loss%", "Sent", "Recv", "Last", "Avg", "Best", "Wrst"
+        "{:<4} {:<15} {:>6} {:>5} {:>5} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6}\n",
+        "Hop", "Host", "Loss%", "Sent", "Recv", "Last", "Avg", "Best", "Wrst", "StDev", "Jttr"
     ));
 
     for report in reports {
         output.push_str(&format!(
-            "{:<4} {:<15} {:>6} {:>5} {:>5} {:>6} {:>6} {:>6} {:>6}\n",
+            "{:<4} {:<15} {:>6} {:>5} {:>5} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6}\n",
             report.ttl,
             report.host_label(),
             format!("{:.1}%", report.statistics.loss_percentage()),
@@ -389,6 +411,8 @@ fn render_hop_table(reports: &[HopReport]) -> String {
             format_rtt(report.statistics.average_rtt_ms()),
             format_rtt(report.statistics.best_rtt_ms()),
             format_rtt(report.statistics.worst_rtt_ms()),
+            format_rtt(report.statistics.stdev_rtt_ms()),
+            format_rtt(report.statistics.jitter_rtt_ms()),
         ));
     }
 
@@ -441,7 +465,7 @@ fn selected_mode(config: &ProbeConfig) -> ProbeMode {
 
 fn parse_command(args: impl IntoIterator<Item = String>) -> Command {
     let mut args = args.into_iter();
-    let program_name = args.next().unwrap_or_else(|| String::from("mtr-rust"));
+    let program_name = args.next().unwrap_or_else(|| String::from("rttmeter"));
 
     let Some(first_arg) = args.next() else {
         print_usage_and_exit(&program_name);
@@ -779,20 +803,23 @@ impl HopReport {
 
 #[cfg(test)]
 mod tests {
-    use super::{Command, DEFAULT_INTERVAL, DEFAULT_MAX_TTL, DEFAULT_PROBE_COUNT, ProbeConfig, parse_command};
+    use super::{
+        Command, DEFAULT_INTERVAL, DEFAULT_MAX_TTL, DEFAULT_PROBE_COUNT, ProbeConfig,
+        parse_command, render_discovery_line,
+    };
     use std::net::Ipv4Addr;
     use std::time::Duration;
 
     #[test]
     fn parse_command_accepts_version_flag() {
-        let command = parse_command([String::from("mtr-rust"), String::from("--version")]);
+        let command = parse_command([String::from("rttmeter"), String::from("--version")]);
 
         assert_eq!(command, Command::Version);
     }
 
     #[test]
     fn parse_command_defaults_probe_count_to_one_and_continuous_scroll() {
-        let command = parse_command([String::from("mtr-rust"), String::from("8.8.8.8")]);
+        let command = parse_command([String::from("rttmeter"), String::from("8.8.8.8")]);
 
         assert_eq!(
             command,
@@ -814,7 +841,7 @@ mod tests {
     #[test]
     fn parse_command_accepts_trace_mode_with_custom_options() {
         let command = parse_command([
-            String::from("mtr-rust"),
+            String::from("rttmeter"),
             String::from("8.8.8.8"),
             String::from("--trace"),
             String::from("--count"),
@@ -848,7 +875,7 @@ mod tests {
     #[test]
     fn parse_command_accepts_single_ttl_mode() {
         let command = parse_command([
-            String::from("mtr-rust"),
+            String::from("rttmeter"),
             String::from("8.8.8.8"),
             String::from("--ttl"),
             String::from("12"),
@@ -877,7 +904,7 @@ mod tests {
     #[test]
     fn parse_command_accepts_decimal_interval() {
         let command = parse_command([
-            String::from("mtr-rust"),
+            String::from("rttmeter"),
             String::from("8.8.8.8"),
             String::from("--interval"),
             String::from("0.5"),
@@ -892,7 +919,7 @@ mod tests {
     #[test]
     fn parse_command_accepts_once_and_live_overrides() {
         let command = parse_command([
-            String::from("mtr-rust"),
+            String::from("rttmeter"),
             String::from("8.8.8.8"),
             String::from("--once"),
             String::from("--live"),
@@ -912,7 +939,7 @@ mod tests {
     #[test]
     fn parse_command_accepts_explicit_trace_mode() {
         let command = parse_command([
-            String::from("mtr-rust"),
+            String::from("rttmeter"),
             String::from("8.8.8.8"),
             String::from("--trace"),
         ]);
@@ -929,7 +956,7 @@ mod tests {
 
     #[test]
     fn parse_command_accepts_hostname_targets() {
-        let command = parse_command([String::from("mtr-rust"), String::from("localhost")]);
+        let command = parse_command([String::from("rttmeter"), String::from("localhost")]);
 
         match command {
             Command::Trace(config) => {
@@ -946,5 +973,18 @@ mod tests {
             }
             Command::Version => panic!("expected trace command"),
         }
+    }
+
+    #[test]
+    fn discovery_line_formats_reply_and_timeout_cases() {
+        assert_eq!(
+            render_discovery_line(
+                3,
+                Some(Ipv4Addr::new(10, 136, 70, 179)),
+                Some(Duration::from_micros(22_800))
+            ),
+            "ttl=3   10.136.70.179   22.8ms"
+        );
+        assert_eq!(render_discovery_line(2, None, None), "ttl=2   *");
     }
 }

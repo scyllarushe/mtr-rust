@@ -1,8 +1,18 @@
-# mtr-rust
+# rttmeter
 
-A learning-focused Rust implementation of `mtr`.
+A lightweight Rust RTT, packet loss, and network path monitor inspired by `mtr`.
 
-The current step is a small, educational `v0.13`:
+RTT means Round-Trip Time, the time for a probe packet to travel to the target
+and back.
+
+Clone:
+
+```bash
+git clone https://github.com/scyllarushe/rttmeter
+cd rttmeter
+```
+
+The current step is a small, educational `v0.15`:
 
 1. Build ICMP Echo Request packets in Rust.
 2. Send repeated IPv4 ICMP probes with a raw socket on macOS.
@@ -25,6 +35,8 @@ The current step is a small, educational `v0.13`:
     path probing.
 14. Default to continuous scrolling output, with `--once` and `--live` as
     explicit runtime overrides.
+15. Add RTT stability metrics with standard deviation and jitter.
+16. Show auto-TTL discovery progress before switching to monitoring.
 
 It is still intentionally limited:
 
@@ -42,7 +54,7 @@ cargo build
 ## Version
 
 ```bash
-./target/debug/mtr-rust --version
+./target/debug/rttmeter --version
 ```
 
 ## Run
@@ -51,39 +63,40 @@ Raw sockets usually require elevated privileges on macOS, so run the binary
 with `sudo`:
 
 ```bash
-sudo ./target/debug/mtr-rust 8.8.8.8
+sudo ./target/debug/rttmeter 8.8.8.8
 ```
 
 By default, the program sends `1` probe per sweep and keeps running:
 
 ```bash
-sudo ./target/debug/mtr-rust 8.8.8.8
+sudo ./target/debug/rttmeter 8.8.8.8
 ```
 
 By default, the program now discovers the TTL where the target responds and
 then probes only that target TTL.
+It first shows the discovery progress before switching into normal monitoring.
 By default, that run is equivalent to:
 
 ```bash
-sudo ./target/debug/mtr-rust 8.8.8.8 --continuous --scroll --count 1 --interval 0.5
+sudo ./target/debug/rttmeter 8.8.8.8 --continuous --scroll --count 1 --interval 0.5
 ```
 
 You can choose a different probe count:
 
 ```bash
-sudo ./target/debug/mtr-rust 8.8.8.8 --count 5
+sudo ./target/debug/rttmeter 8.8.8.8 --count 5
 ```
 
 `--continuous` is accepted for compatibility, but it is already the default:
 
 ```bash
-sudo ./target/debug/mtr-rust 8.8.8.8 --count 5 --continuous
+sudo ./target/debug/rttmeter 8.8.8.8 --count 5 --continuous
 ```
 
 If you want a one-shot run instead, use `--once`:
 
 ```bash
-sudo ./target/debug/mtr-rust 8.8.8.8 --once
+sudo ./target/debug/rttmeter 8.8.8.8 --once
 ```
 
 In continuous mode, the default output style is scrolling output.
@@ -92,56 +105,56 @@ The default interval between sweeps is `0.5` seconds.
 `--scroll` is accepted for compatibility, but it is already the default:
 
 ```bash
-sudo ./target/debug/mtr-rust 8.8.8.8 --count 5 --max-ttl 5 --continuous --scroll
+sudo ./target/debug/rttmeter 8.8.8.8 --count 5 --max-ttl 5 --continuous --scroll
 ```
 
 If you want live refresh instead, add `--live`:
 
 ```bash
-sudo ./target/debug/mtr-rust 8.8.8.8 --count 5 --continuous --live
+sudo ./target/debug/rttmeter 8.8.8.8 --count 5 --continuous --live
 ```
 
 You can change the delay between sweeps with `--interval`:
 
 ```bash
-sudo ./target/debug/mtr-rust 8.8.8.8 --count 5 --continuous --interval 0.5
+sudo ./target/debug/rttmeter 8.8.8.8 --count 5 --continuous --interval 0.5
 ```
 
 If you want to probe only one hop, use `--ttl`:
 
 ```bash
-sudo ./target/debug/mtr-rust 8.8.8.8 --ttl 12 --count 1 --verbose
+sudo ./target/debug/rttmeter 8.8.8.8 --ttl 12 --count 1 --verbose
 ```
 
 If you want that single-hop probe to run only once, add `--once`:
 
 ```bash
-sudo ./target/debug/mtr-rust 8.8.8.8 --ttl 12 --count 1 --verbose --once
+sudo ./target/debug/rttmeter 8.8.8.8 --ttl 12 --count 1 --verbose --once
 ```
 
 If you want the full path, use `--trace`:
 
 ```bash
-sudo ./target/debug/mtr-rust 8.8.8.8 --trace --max-ttl 12
+sudo ./target/debug/rttmeter 8.8.8.8 --trace --max-ttl 12
 ```
 
 If you want a one-shot full-path run, add `--once`:
 
 ```bash
-sudo ./target/debug/mtr-rust 8.8.8.8 --trace --max-ttl 12 --once
+sudo ./target/debug/rttmeter 8.8.8.8 --trace --max-ttl 12 --once
 ```
 
 Hostnames work too, as long as they resolve to IPv4:
 
 ```bash
-sudo ./target/debug/mtr-rust example.com --count 5
+sudo ./target/debug/rttmeter example.com --count 5
 ```
 
 By default, the program probes up to `30` TTLs. You can lower that while
 experimenting during discovery or tracing:
 
 ```bash
-sudo ./target/debug/mtr-rust 8.8.8.8 --trace --count 5 --max-ttl 5
+sudo ./target/debug/rttmeter 8.8.8.8 --trace --count 5 --max-ttl 5
 ```
 
 `--ttl 12` probes only TTL 12. It does not probe TTL 1 through 12 first.
@@ -160,13 +173,13 @@ tables in scrolling mode.
 If you want to watch each probe while learning or debugging, use `--verbose`:
 
 ```bash
-sudo ./target/debug/mtr-rust 8.8.8.8 --count 5 --max-ttl 5 --verbose
+sudo ./target/debug/rttmeter 8.8.8.8 --count 5 --max-ttl 5 --verbose
 ```
 
 You can combine `--verbose` with `--continuous`:
 
 ```bash
-sudo ./target/debug/mtr-rust 8.8.8.8 --count 5 --max-ttl 5 --verbose --continuous
+sudo ./target/debug/rttmeter 8.8.8.8 --count 5 --max-ttl 5 --verbose --continuous
 ```
 
 When `--verbose` is enabled, the program uses normal scrolling output instead
@@ -175,28 +188,37 @@ of live refresh so the per-probe logs stay readable.
 Verbose mode prints progress lines such as:
 
 ```text
-Starting mtr-rust target=example.com resolved=93.184.216.34 count=5 timeout=1.0s interval=0.5s mode=auto-ttl run=continuous output=scroll
+Starting rttmeter target=example.com resolved=93.184.216.34 count=5 timeout=1.0s interval=0.5s mode=auto-ttl run=continuous output=scroll
 Probing ttl=1 seq=1...
 Reply type=11 from 192.168.1.1 ttl=1 seq=1 matched=yes rtt=2.3ms
 Probing ttl=1 seq=2...
 Timeout ttl=1 seq=2
 ```
 
+`StDev` shows how spread out RTT values are from the average.
+`Jttr` shows how much RTT changes between consecutive replies.
+
 Example output:
 
 ```text
-Starting mtr-rust target=8.8.8.8 resolved=8.8.8.8 count=1 timeout=1.0s interval=0.5s mode=auto-ttl run=continuous output=scroll
-Hop  Host            Loss%  Sent  Recv  Last   Avg   Best   Wrst
-12   8.8.8.8          0.0%     1     1   34.2   34.2   34.2   34.2
+Starting rttmeter target=8.8.8.8 resolved=8.8.8.8 count=1 timeout=1.0s interval=0.5s mode=auto-ttl run=continuous output=scroll
+Discovering target TTL up to 30...
+ttl=1   192.168.1.1      2.1ms
+ttl=2   10.0.0.1         8.4ms
+ttl=3   *
+ttl=12  8.8.8.8         34.2ms
+Target reached at ttl=12. Switching to target monitoring.
+Hop  Host            Loss%  Sent  Recv  Last   Avg   Best   Wrst  StDev   Jttr
+12   8.8.8.8          0.0%     1     1   34.2   34.2   34.2   34.2    0.0    0.0
 ```
 
 Trace mode example:
 
 ```text
-Starting mtr-rust target=8.8.8.8 resolved=8.8.8.8 count=1 max_ttl=30 timeout=1.0s interval=0.5s mode=trace run=continuous output=scroll
-Hop  Host            Loss%  Sent  Recv  Last   Avg   Best   Wrst
-1    192.168.1.1      0.0%     1     1    2.1    2.1    2.1    2.1
-2    10.0.0.1        100.0%     1     0      -      -      -      -
+Starting rttmeter target=8.8.8.8 resolved=8.8.8.8 count=1 max_ttl=30 timeout=1.0s interval=0.5s mode=trace run=continuous output=scroll
+Hop  Host            Loss%  Sent  Recv  Last   Avg   Best   Wrst  StDev   Jttr
+1    192.168.1.1      0.0%     1     1    2.1    2.1    2.1    2.1    0.0    0.0
+2    10.0.0.1        100.0%     1     0      -      -      -      -      -      -
 ```
 
 Usage:
@@ -230,6 +252,8 @@ Output styles:
     probing.
 12. `v0.12`: Add `--interval` for continuous sweep pacing.
 13. `v0.13`: Make auto target-TTL discovery the default and add `--trace`.
-14. Next: Improve the in-place refresh presentation further.
-15. Later: Add reverse DNS lookups as an optional display feature.
-16. Later: Grow that into a small, readable `mtr` implementation.
+14. `v0.14`: Add RTT stability metrics with `StDev` and `Jttr`.
+15. `v0.15`: Show auto-TTL discovery progress before monitoring.
+16. Next: Improve the in-place refresh presentation further.
+17. Later: Add reverse DNS lookups as an optional display feature.
+18. Later: Grow that into a small, readable `mtr` implementation.

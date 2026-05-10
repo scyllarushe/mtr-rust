@@ -5,6 +5,7 @@ pub struct ProbeStatistics {
     sent: u32,
     received: u32,
     total_rtt_ms: f64,
+    rtt_samples_ms: Vec<f64>,
     last_rtt_ms: Option<f64>,
     best_rtt_ms: Option<f64>,
     worst_rtt_ms: Option<f64>,
@@ -20,6 +21,7 @@ impl ProbeStatistics {
 
         self.received += 1;
         self.total_rtt_ms += rtt_ms;
+        self.rtt_samples_ms.push(rtt_ms);
         self.last_rtt_ms = Some(rtt_ms);
         self.best_rtt_ms = Some(match self.best_rtt_ms {
             Some(best) => best.min(rtt_ms),
@@ -66,6 +68,43 @@ impl ProbeStatistics {
     pub fn worst_rtt_ms(&self) -> Option<f64> {
         self.worst_rtt_ms
     }
+
+    pub fn stdev_rtt_ms(&self) -> Option<f64> {
+        match self.rtt_samples_ms.len() {
+            0 => None,
+            1 => Some(0.0),
+            count => {
+                let average = self.total_rtt_ms / count as f64;
+                let variance = self
+                    .rtt_samples_ms
+                    .iter()
+                    .map(|sample| {
+                        let delta = sample - average;
+                        delta * delta
+                    })
+                    .sum::<f64>()
+                    / count as f64;
+
+                Some(variance.sqrt())
+            }
+        }
+    }
+
+    pub fn jitter_rtt_ms(&self) -> Option<f64> {
+        match self.rtt_samples_ms.len() {
+            0 => None,
+            1 => Some(0.0),
+            count => {
+                let total_delta = self
+                    .rtt_samples_ms
+                    .windows(2)
+                    .map(|pair| (pair[1] - pair[0]).abs())
+                    .sum::<f64>();
+
+                Some(total_delta / (count - 1) as f64)
+            }
+        }
+    }
 }
 
 fn duration_to_millis(duration: Duration) -> f64 {
@@ -110,5 +149,46 @@ mod tests {
         assert_eq!(stats.average_rtt_ms(), None);
         assert_eq!(stats.best_rtt_ms(), None);
         assert_eq!(stats.worst_rtt_ms(), None);
+        assert_eq!(stats.stdev_rtt_ms(), None);
+        assert_eq!(stats.jitter_rtt_ms(), None);
+    }
+
+    #[test]
+    fn statistics_calculate_stdev_for_received_rtts() {
+        let mut stats = ProbeStatistics::default();
+
+        stats.record_probe_sent();
+        stats.record_reply(Duration::from_millis(10));
+        stats.record_probe_sent();
+        stats.record_reply(Duration::from_millis(20));
+        stats.record_probe_sent();
+        stats.record_reply(Duration::from_millis(30));
+
+        assert!((stats.stdev_rtt_ms().expect("stdev RTT") - 8.164_965).abs() < 0.001);
+    }
+
+    #[test]
+    fn statistics_calculate_jitter_from_consecutive_rtts() {
+        let mut stats = ProbeStatistics::default();
+
+        stats.record_probe_sent();
+        stats.record_reply(Duration::from_millis(10));
+        stats.record_probe_sent();
+        stats.record_reply(Duration::from_millis(16));
+        stats.record_probe_sent();
+        stats.record_reply(Duration::from_millis(13));
+
+        assert!((stats.jitter_rtt_ms().expect("jitter RTT") - 4.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn statistics_with_one_reply_have_zero_stability_metrics() {
+        let mut stats = ProbeStatistics::default();
+
+        stats.record_probe_sent();
+        stats.record_reply(Duration::from_millis(25));
+
+        assert_eq!(stats.stdev_rtt_ms(), Some(0.0));
+        assert_eq!(stats.jitter_rtt_ms(), Some(0.0));
     }
 }
