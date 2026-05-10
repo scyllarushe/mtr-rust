@@ -25,11 +25,11 @@ fn main() {
 
 fn run_trace(config: ProbeConfig) {
     println!(
-        "Starting mtr-rust target={} resolved={} count={} max_ttl={} timeout={:.1}s mode={}",
+        "Starting mtr-rust target={} resolved={} count={} {} timeout={:.1}s mode={}",
         config.original_target,
         config.resolved_target,
         config.count,
-        config.max_ttl,
+        ttl_display(&config),
         PER_PROBE_TIMEOUT.as_secs_f64(),
         if config.continuous { "continuous" } else { "once" }
     );
@@ -66,7 +66,7 @@ fn run_trace(config: ProbeConfig) {
 }
 
 fn collect_hop_reports(socket_fd: RawFd, config: &ProbeConfig) -> io::Result<Vec<HopReport>> {
-    let mut reports = (1..=config.max_ttl).map(HopReport::new).collect::<Vec<_>>();
+    let mut reports = initialize_reports(config);
     let mut next_sequence = 1u16;
 
     run_probe_sweep(socket_fd, config, &mut reports, &mut next_sequence)?;
@@ -76,7 +76,7 @@ fn collect_hop_reports(socket_fd: RawFd, config: &ProbeConfig) -> io::Result<Vec
 }
 
 fn run_continuous_trace(socket_fd: RawFd, config: &ProbeConfig) -> io::Result<()> {
-    let mut reports = (1..=config.max_ttl).map(HopReport::new).collect::<Vec<_>>();
+    let mut reports = initialize_reports(config);
     let mut next_sequence = 1u16;
 
     loop {
@@ -86,6 +86,13 @@ fn run_continuous_trace(socket_fd: RawFd, config: &ProbeConfig) -> io::Result<()
         truncate_after_target(&mut visible_reports, config.resolved_target);
         println!();
         print_hop_table(&visible_reports);
+    }
+}
+
+fn initialize_reports(config: &ProbeConfig) -> Vec<HopReport> {
+    match config.ttl {
+        Some(ttl) => vec![HopReport::new(ttl)],
+        None => (1..=config.max_ttl).map(HopReport::new).collect(),
     }
 }
 
@@ -297,6 +304,13 @@ fn format_duration_ms(duration: Duration) -> String {
     format!("{:.1}", duration.as_secs_f64() * 1000.0)
 }
 
+fn ttl_display(config: &ProbeConfig) -> String {
+    match config.ttl {
+        Some(ttl) => format!("ttl={ttl}"),
+        None => format!("max_ttl={}", config.max_ttl),
+    }
+}
+
 fn parse_command(args: impl IntoIterator<Item = String>) -> Command {
     let mut args = args.into_iter();
     let program_name = args.next().unwrap_or_else(|| String::from("mtr-rust"));
@@ -323,6 +337,8 @@ fn parse_command(args: impl IntoIterator<Item = String>) -> Command {
 
     let mut count = DEFAULT_PROBE_COUNT;
     let mut max_ttl = DEFAULT_MAX_TTL;
+    let mut explicit_max_ttl = false;
+    let mut ttl = None;
     let mut verbose = false;
     let mut continuous = false;
 
@@ -353,7 +369,10 @@ fn parse_command(args: impl IntoIterator<Item = String>) -> Command {
                 };
 
                 match value.parse::<u8>() {
-                    Ok(parsed_max_ttl) if parsed_max_ttl > 0 => max_ttl = parsed_max_ttl,
+                    Ok(parsed_max_ttl) if parsed_max_ttl > 0 => {
+                        max_ttl = parsed_max_ttl;
+                        explicit_max_ttl = true;
+                    }
                     Ok(_) => {
                         eprintln!("Max TTL must be greater than zero");
                         print_usage_and_exit(&program_name);
@@ -364,10 +383,33 @@ fn parse_command(args: impl IntoIterator<Item = String>) -> Command {
                     }
                 }
             }
+            "--ttl" => {
+                let Some(value) = args.next() else {
+                    eprintln!("Missing value after --ttl");
+                    print_usage_and_exit(&program_name);
+                };
+
+                match value.parse::<u8>() {
+                    Ok(parsed_ttl) if parsed_ttl > 0 => ttl = Some(parsed_ttl),
+                    Ok(_) => {
+                        eprintln!("TTL must be greater than zero");
+                        print_usage_and_exit(&program_name);
+                    }
+                    Err(error) => {
+                        eprintln!("Invalid TTL '{value}': {error}");
+                        print_usage_and_exit(&program_name);
+                    }
+                }
+            }
             "--verbose" => verbose = true,
             "--continuous" => continuous = true,
             _ => print_usage_and_exit(&program_name),
         }
+    }
+
+    if ttl.is_some() && explicit_max_ttl {
+        eprintln!("--ttl cannot be used with --max-ttl");
+        print_usage_and_exit(&program_name);
     }
 
     Command::Trace(ProbeConfig {
@@ -375,6 +417,7 @@ fn parse_command(args: impl IntoIterator<Item = String>) -> Command {
         resolved_target,
         count,
         max_ttl,
+        ttl,
         verbose,
         continuous,
     })
@@ -382,7 +425,7 @@ fn parse_command(args: impl IntoIterator<Item = String>) -> Command {
 
 fn print_usage_and_exit(program_name: &str) -> ! {
     eprintln!(
-        "Usage: {program_name} <target> [--count <probes>] [--max-ttl <hops>] [--verbose] [--continuous]"
+        "Usage: {program_name} <target> [--count <probes>] [--max-ttl <hops> | --ttl <hop>] [--verbose] [--continuous]"
     );
     eprintln!("       {program_name} --version");
     process::exit(1);
@@ -420,6 +463,7 @@ struct ProbeConfig {
     resolved_target: Ipv4Addr,
     count: u16,
     max_ttl: u8,
+    ttl: Option<u8>,
     verbose: bool,
     continuous: bool,
 }
@@ -583,6 +627,7 @@ mod tests {
                 resolved_target: Ipv4Addr::new(8, 8, 8, 8),
                 count: DEFAULT_PROBE_COUNT,
                 max_ttl: DEFAULT_MAX_TTL,
+                ttl: None,
                 verbose: false,
                 continuous: false,
             })
@@ -609,8 +654,35 @@ mod tests {
                 resolved_target: Ipv4Addr::new(8, 8, 8, 8),
                 count: 3,
                 max_ttl: 5,
+                ttl: None,
                 verbose: true,
                 continuous: true,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_command_accepts_single_ttl_mode() {
+        let command = parse_command([
+            String::from("mtr-rust"),
+            String::from("8.8.8.8"),
+            String::from("--ttl"),
+            String::from("12"),
+            String::from("--count"),
+            String::from("1"),
+            String::from("--verbose"),
+        ]);
+
+        assert_eq!(
+            command,
+            Command::Trace(ProbeConfig {
+                original_target: String::from("8.8.8.8"),
+                resolved_target: Ipv4Addr::new(8, 8, 8, 8),
+                count: 1,
+                max_ttl: DEFAULT_MAX_TTL,
+                ttl: Some(12),
+                verbose: true,
+                continuous: false,
             })
         );
     }
@@ -625,6 +697,7 @@ mod tests {
                 assert!(config.resolved_target.is_loopback());
                 assert_eq!(config.count, DEFAULT_PROBE_COUNT);
                 assert_eq!(config.max_ttl, DEFAULT_MAX_TTL);
+                assert_eq!(config.ttl, None);
                 assert!(!config.verbose);
                 assert!(!config.continuous);
             }

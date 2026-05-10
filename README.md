@@ -2,7 +2,7 @@
 
 A learning-focused Rust implementation of `mtr`.
 
-The current step is a small, educational `v0.9`:
+The current step is a small, educational `v0.10`:
 
 1. Build ICMP Echo Request packets in Rust.
 2. Send repeated IPv4 ICMP probes with a raw socket on macOS.
@@ -17,6 +17,8 @@ The current step is a small, educational `v0.9`:
 8. Accept either a hostname or an IPv4 address as the target and resolve
    hostnames to IPv4 before probing.
 9. Offer a `--continuous` mode that keeps running until you stop it.
+10. Offer a `--ttl` mode for probing exactly one hop without walking earlier
+    TTLs first.
 
 It is still intentionally limited:
 
@@ -65,6 +67,12 @@ If you want it to keep running until you press `Ctrl+C`, use
 sudo ./target/debug/mtr-rust 8.8.8.8 --count 5 --max-ttl 5 --continuous
 ```
 
+If you want to probe only one hop, use `--ttl`:
+
+```bash
+sudo ./target/debug/mtr-rust 8.8.8.8 --ttl 12 --count 1 --verbose
+```
+
 Hostnames work too, as long as they resolve to IPv4:
 
 ```bash
@@ -77,6 +85,8 @@ experimenting:
 ```bash
 sudo ./target/debug/mtr-rust 8.8.8.8 --count 5 --max-ttl 5
 ```
+
+`--ttl 12` probes only TTL 12. It does not probe TTL 1 through 12 first.
 
 If socket creation fails, the program prints the operating system error so you
 can see whether it is a permissions issue or something else. Each probe uses a
@@ -116,6 +126,12 @@ Hop  Host            Loss%  Sent  Recv  Last   Avg   Best   Wrst
 2    10.0.0.1        10.0%    10     9    8.2    9.1    7.8   13.4
 ```
 
+Usage:
+
+```text
+<target> [--count <probes>] [--max-ttl <hops> | --ttl <hop>] [--verbose] [--continuous]
+```
+
 ## Roadmap
 
 1. `v0.1`: Create and close a macOS ICMP raw socket.
@@ -129,7 +145,8 @@ Hop  Host            Loss%  Sent  Recv  Last   Avg   Best   Wrst
 8. `v0.8`: Resolve hostnames to IPv4 and display both original and resolved
    targets.
 9. `v0.9`: Add a continuous probing mode for ping-like repeated sweeps.
-10. Next: Refresh the table in place instead of printing a new snapshot each
+10. `v0.10`: Add `--ttl` for single-hop probing.
+11. Next: Refresh the table in place instead of printing a new snapshot each
     sweep.
-11. Later: Add reverse DNS lookups as an optional display feature.
-12. Later: Grow that into a small, readable `mtr` implementation.
+12. Later: Add reverse DNS lookups as an optional display feature.
+13. Later: Grow that into a small, readable `mtr` implementation.
