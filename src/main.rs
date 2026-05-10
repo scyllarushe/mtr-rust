@@ -1,5 +1,6 @@
 use std::env;
 use std::io;
+use std::io::Write;
 use std::mem;
 use std::net::{Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::os::fd::RawFd;
@@ -78,14 +79,30 @@ fn collect_hop_reports(socket_fd: RawFd, config: &ProbeConfig) -> io::Result<Vec
 fn run_continuous_trace(socket_fd: RawFd, config: &ProbeConfig) -> io::Result<()> {
     let mut reports = initialize_reports(config);
     let mut next_sequence = 1u16;
+    let mut previous_table_lines = None;
 
     loop {
         run_probe_sweep(socket_fd, config, &mut reports, &mut next_sequence)?;
 
         let mut visible_reports = reports.clone();
         truncate_after_target(&mut visible_reports, config.resolved_target);
-        println!();
-        print_hop_table(&visible_reports);
+        let table = render_hop_table(&visible_reports);
+
+        if should_use_live_refresh(config) {
+            let stdout = io::stdout();
+            let mut handle = stdout.lock();
+
+            if let Some(line_count) = previous_table_lines {
+                write!(handle, "\x1b[{line_count}A\x1b[J")?;
+            }
+
+            write!(handle, "{table}")?;
+            handle.flush()?;
+            previous_table_lines = Some(count_lines(&table));
+        } else {
+            println!();
+            print!("{table}");
+        }
     }
 }
 
@@ -272,25 +289,7 @@ fn receive_matching_reply(
 }
 
 fn print_hop_table(reports: &[HopReport]) {
-    println!(
-        "{:<4} {:<15} {:>6} {:>5} {:>5} {:>6} {:>6} {:>6} {:>6}",
-        "Hop", "Host", "Loss%", "Sent", "Recv", "Last", "Avg", "Best", "Wrst"
-    );
-
-    for report in reports {
-        println!(
-            "{:<4} {:<15} {:>6} {:>5} {:>5} {:>6} {:>6} {:>6} {:>6}",
-            report.ttl,
-            report.host_label(),
-            format!("{:.1}%", report.statistics.loss_percentage()),
-            report.statistics.sent(),
-            report.statistics.received(),
-            format_rtt(report.statistics.last_rtt_ms()),
-            format_rtt(report.statistics.average_rtt_ms()),
-            format_rtt(report.statistics.best_rtt_ms()),
-            format_rtt(report.statistics.worst_rtt_ms()),
-        );
-    }
+    print!("{}", render_hop_table(reports));
 }
 
 fn format_rtt(rtt_ms: Option<f64>) -> String {
@@ -302,6 +301,39 @@ fn format_rtt(rtt_ms: Option<f64>) -> String {
 
 fn format_duration_ms(duration: Duration) -> String {
     format!("{:.1}", duration.as_secs_f64() * 1000.0)
+}
+
+fn render_hop_table(reports: &[HopReport]) -> String {
+    let mut output = String::new();
+    output.push_str(&format!(
+        "{:<4} {:<15} {:>6} {:>5} {:>5} {:>6} {:>6} {:>6} {:>6}\n",
+        "Hop", "Host", "Loss%", "Sent", "Recv", "Last", "Avg", "Best", "Wrst"
+    ));
+
+    for report in reports {
+        output.push_str(&format!(
+            "{:<4} {:<15} {:>6} {:>5} {:>5} {:>6} {:>6} {:>6} {:>6}\n",
+            report.ttl,
+            report.host_label(),
+            format!("{:.1}%", report.statistics.loss_percentage()),
+            report.statistics.sent(),
+            report.statistics.received(),
+            format_rtt(report.statistics.last_rtt_ms()),
+            format_rtt(report.statistics.average_rtt_ms()),
+            format_rtt(report.statistics.best_rtt_ms()),
+            format_rtt(report.statistics.worst_rtt_ms()),
+        ));
+    }
+
+    output
+}
+
+fn count_lines(rendered_table: &str) -> u16 {
+    rendered_table.lines().count() as u16
+}
+
+fn should_use_live_refresh(config: &ProbeConfig) -> bool {
+    config.continuous && !config.scroll && !config.verbose
 }
 
 fn ttl_display(config: &ProbeConfig) -> String {
@@ -341,6 +373,7 @@ fn parse_command(args: impl IntoIterator<Item = String>) -> Command {
     let mut ttl = None;
     let mut verbose = false;
     let mut continuous = false;
+    let mut scroll = false;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -403,6 +436,7 @@ fn parse_command(args: impl IntoIterator<Item = String>) -> Command {
             }
             "--verbose" => verbose = true,
             "--continuous" => continuous = true,
+            "--scroll" => scroll = true,
             _ => print_usage_and_exit(&program_name),
         }
     }
@@ -420,12 +454,13 @@ fn parse_command(args: impl IntoIterator<Item = String>) -> Command {
         ttl,
         verbose,
         continuous,
+        scroll,
     })
 }
 
 fn print_usage_and_exit(program_name: &str) -> ! {
     eprintln!(
-        "Usage: {program_name} <target> [--count <probes>] [--max-ttl <hops> | --ttl <hop>] [--verbose] [--continuous]"
+        "Usage: {program_name} <target> [--count <probes>] [--max-ttl <hops> | --ttl <hop>] [--verbose] [--continuous] [--scroll]"
     );
     eprintln!("       {program_name} --version");
     process::exit(1);
@@ -466,6 +501,7 @@ struct ProbeConfig {
     ttl: Option<u8>,
     verbose: bool,
     continuous: bool,
+    scroll: bool,
 }
 
 fn create_icmp_socket() -> io::Result<RawFd> {
@@ -630,6 +666,7 @@ mod tests {
                 ttl: None,
                 verbose: false,
                 continuous: false,
+                scroll: false,
             })
         );
     }
@@ -645,6 +682,7 @@ mod tests {
             String::from("5"),
             String::from("--verbose"),
             String::from("--continuous"),
+            String::from("--scroll"),
         ]);
 
         assert_eq!(
@@ -657,6 +695,7 @@ mod tests {
                 ttl: None,
                 verbose: true,
                 continuous: true,
+                scroll: true,
             })
         );
     }
@@ -683,6 +722,7 @@ mod tests {
                 ttl: Some(12),
                 verbose: true,
                 continuous: false,
+                scroll: false,
             })
         );
     }
@@ -700,6 +740,7 @@ mod tests {
                 assert_eq!(config.ttl, None);
                 assert!(!config.verbose);
                 assert!(!config.continuous);
+                assert!(!config.scroll);
             }
             Command::Version => panic!("expected trace command"),
         }

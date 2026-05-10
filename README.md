@@ -2,7 +2,7 @@
 
 A learning-focused Rust implementation of `mtr`.
 
-The current step is a small, educational `v0.10`:
+The current step is a small, educational `v0.11`:
 
 1. Build ICMP Echo Request packets in Rust.
 2. Send repeated IPv4 ICMP probes with a raw socket on macOS.
@@ -19,6 +19,7 @@ The current step is a small, educational `v0.10`:
 9. Offer a `--continuous` mode that keeps running until you stop it.
 10. Offer a `--ttl` mode for probing exactly one hop without walking earlier
     TTLs first.
+11. Offer both live-refresh and scrolling output styles for continuous mode.
 
 It is still intentionally limited:
 
@@ -67,6 +68,14 @@ If you want it to keep running until you press `Ctrl+C`, use
 sudo ./target/debug/mtr-rust 8.8.8.8 --count 5 --max-ttl 5 --continuous
 ```
 
+In continuous mode, the default output style is a live refreshed table.
+
+If you want the older scrolling behavior instead, add `--scroll`:
+
+```bash
+sudo ./target/debug/mtr-rust 8.8.8.8 --count 5 --max-ttl 5 --continuous --scroll
+```
+
 If you want to probe only one hop, use `--ttl`:
 
 ```bash
@@ -107,6 +116,9 @@ You can combine `--verbose` with `--continuous`:
 sudo ./target/debug/mtr-rust 8.8.8.8 --count 5 --max-ttl 5 --verbose --continuous
 ```
 
+When `--verbose` is enabled, the program uses normal scrolling output instead
+of live refresh so the per-probe logs stay readable.
+
 Verbose mode prints progress lines such as:
 
 ```text
@@ -129,8 +141,15 @@ Hop  Host            Loss%  Sent  Recv  Last   Avg   Best   Wrst
 Usage:
 
 ```text
-<target> [--count <probes>] [--max-ttl <hops> | --ttl <hop>] [--verbose] [--continuous]
+<target> [--count <probes>] [--max-ttl <hops> | --ttl <hop>] [--verbose] [--continuous] [--scroll]
 ```
+
+Output styles:
+
+1. Once mode: one final table.
+2. Continuous mode: live refreshed table.
+3. Continuous `--scroll`: append a new table after every sweep.
+4. `--verbose`: detailed per-probe logs with scrolling output.
 
 ## Roadmap
 
@@ -146,7 +165,8 @@ Usage:
    targets.
 9. `v0.9`: Add a continuous probing mode for ping-like repeated sweeps.
 10. `v0.10`: Add `--ttl` for single-hop probing.
-11. Next: Refresh the table in place instead of printing a new snapshot each
-    sweep.
-12. Later: Add reverse DNS lookups as an optional display feature.
-13. Later: Grow that into a small, readable `mtr` implementation.
+11. `v0.11`: Add live refresh and scrolling output modes for continuous
+    probing.
+12. Next: Improve the in-place refresh presentation further.
+13. Later: Add reverse DNS lookups as an optional display feature.
+14. Later: Grow that into a small, readable `mtr` implementation.
