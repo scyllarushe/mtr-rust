@@ -5,6 +5,7 @@ use std::mem;
 use std::net::{Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::os::fd::RawFd;
 use std::process;
+use std::thread;
 use std::time::{Duration, Instant};
 
 use mtr_rust::icmp::{
@@ -14,6 +15,7 @@ use mtr_rust::stats::ProbeStatistics;
 
 const DEFAULT_PROBE_COUNT: u16 = 10;
 const DEFAULT_MAX_TTL: u8 = 30;
+const DEFAULT_INTERVAL: Duration = Duration::from_secs(1);
 const PER_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -26,13 +28,14 @@ fn main() {
 
 fn run_trace(config: ProbeConfig) {
     println!(
-        "Starting mtr-rust target={} resolved={} count={} {} timeout={:.1}s mode={}",
+        "Starting mtr-rust target={} resolved={} count={} {} timeout={:.1}s interval={:.1}s mode={}",
         config.original_target,
         config.resolved_target,
         config.count,
         ttl_display(&config),
         PER_PROBE_TIMEOUT.as_secs_f64(),
-        if config.continuous { "continuous" } else { "once" }
+        config.interval.as_secs_f64(),
+        mode_name(&config)
     );
 
     let socket_fd = match create_icmp_socket() {
@@ -67,8 +70,8 @@ fn run_trace(config: ProbeConfig) {
 }
 
 fn collect_hop_reports(socket_fd: RawFd, config: &ProbeConfig) -> io::Result<Vec<HopReport>> {
-    let mut reports = initialize_reports(config);
     let mut next_sequence = 1u16;
+    let mut reports = prepare_reports(socket_fd, config, &mut next_sequence)?;
 
     run_probe_sweep(socket_fd, config, &mut reports, &mut next_sequence)?;
     truncate_after_target(&mut reports, config.resolved_target);
@@ -77,8 +80,8 @@ fn collect_hop_reports(socket_fd: RawFd, config: &ProbeConfig) -> io::Result<Vec
 }
 
 fn run_continuous_trace(socket_fd: RawFd, config: &ProbeConfig) -> io::Result<()> {
-    let mut reports = initialize_reports(config);
     let mut next_sequence = 1u16;
+    let mut reports = prepare_reports(socket_fd, config, &mut next_sequence)?;
     let mut previous_table_lines = None;
 
     loop {
@@ -103,14 +106,76 @@ fn run_continuous_trace(socket_fd: RawFd, config: &ProbeConfig) -> io::Result<()
             println!();
             print!("{table}");
         }
+
+        thread::sleep(config.interval);
     }
 }
 
-fn initialize_reports(config: &ProbeConfig) -> Vec<HopReport> {
-    match config.ttl {
-        Some(ttl) => vec![HopReport::new(ttl)],
-        None => (1..=config.max_ttl).map(HopReport::new).collect(),
+fn prepare_reports(
+    socket_fd: RawFd,
+    config: &ProbeConfig,
+    next_sequence: &mut u16,
+) -> io::Result<Vec<HopReport>> {
+    match selected_mode(config) {
+        ProbeMode::AutoTtl => {
+            let discovered_ttl = discover_target_ttl(socket_fd, config, next_sequence)?;
+            Ok(vec![HopReport::new(discovered_ttl)])
+        }
+        ProbeMode::SingleTtl(ttl) => Ok(vec![HopReport::new(ttl)]),
+        ProbeMode::Trace => Ok((1..=config.max_ttl).map(HopReport::new).collect()),
     }
+}
+
+fn discover_target_ttl(
+    socket_fd: RawFd,
+    config: &ProbeConfig,
+    next_sequence: &mut u16,
+) -> io::Result<u8> {
+    let identifier = process::id() as u16;
+    let destination = ipv4_sockaddr(config.resolved_target);
+
+    for ttl in 1..=config.max_ttl {
+        set_socket_ttl(socket_fd, ttl)?;
+
+        if config.verbose {
+            eprintln!("Probing ttl={ttl} seq={}...", *next_sequence);
+        }
+
+        let packet = EchoRequest::new(identifier, *next_sequence, b"mtr-rust".to_vec()).to_bytes();
+        let started_at = Instant::now();
+
+        send_icmp_echo_request(socket_fd, &destination, &packet, config.resolved_target)?;
+
+        if let Some(reply) = receive_matching_reply(
+            socket_fd,
+            ttl,
+            identifier,
+            *next_sequence,
+            started_at,
+            config.resolved_target,
+            config.verbose,
+        )? {
+            if reply.icmp_type == ECHO_REPLY_TYPE && reply.source_ip == config.resolved_target {
+                *next_sequence = next_sequence.wrapping_add(1);
+                if *next_sequence == 0 {
+                    *next_sequence = 1;
+                }
+                return Ok(ttl);
+            }
+        } else if config.verbose {
+            eprintln!("Timeout ttl={ttl} seq={}", *next_sequence);
+        }
+
+        *next_sequence = next_sequence.wrapping_add(1);
+        if *next_sequence == 0 {
+            *next_sequence = 1;
+        }
+    }
+
+    Err(io::Error::other(format!(
+        "Could not discover target TTL within max_ttl={}. Try --trace --max-ttl {}",
+        config.max_ttl, config.max_ttl
+    )))
 }
 
 fn run_probe_sweep(
@@ -337,9 +402,25 @@ fn should_use_live_refresh(config: &ProbeConfig) -> bool {
 }
 
 fn ttl_display(config: &ProbeConfig) -> String {
-    match config.ttl {
-        Some(ttl) => format!("ttl={ttl}"),
-        None => format!("max_ttl={}", config.max_ttl),
+    match selected_mode(config) {
+        ProbeMode::SingleTtl(ttl) => format!("ttl={ttl}"),
+        ProbeMode::AutoTtl | ProbeMode::Trace => format!("max_ttl={}", config.max_ttl),
+    }
+}
+
+fn mode_name(config: &ProbeConfig) -> &'static str {
+    match selected_mode(config) {
+        ProbeMode::AutoTtl => "auto-ttl",
+        ProbeMode::SingleTtl(_) => "single-ttl",
+        ProbeMode::Trace => "trace",
+    }
+}
+
+fn selected_mode(config: &ProbeConfig) -> ProbeMode {
+    match (config.ttl, config.trace) {
+        (Some(ttl), _) => ProbeMode::SingleTtl(ttl),
+        (None, true) => ProbeMode::Trace,
+        (None, false) => ProbeMode::AutoTtl,
     }
 }
 
@@ -371,9 +452,11 @@ fn parse_command(args: impl IntoIterator<Item = String>) -> Command {
     let mut max_ttl = DEFAULT_MAX_TTL;
     let mut explicit_max_ttl = false;
     let mut ttl = None;
+    let mut trace = false;
     let mut verbose = false;
     let mut continuous = false;
     let mut scroll = false;
+    let mut interval = DEFAULT_INTERVAL;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -434,9 +517,30 @@ fn parse_command(args: impl IntoIterator<Item = String>) -> Command {
                     }
                 }
             }
+            "--trace" => trace = true,
             "--verbose" => verbose = true,
             "--continuous" => continuous = true,
             "--scroll" => scroll = true,
+            "--interval" => {
+                let Some(value) = args.next() else {
+                    eprintln!("Missing value after --interval");
+                    print_usage_and_exit(&program_name);
+                };
+
+                match value.parse::<f64>() {
+                    Ok(parsed_interval) if parsed_interval > 0.0 => {
+                        interval = Duration::from_secs_f64(parsed_interval);
+                    }
+                    Ok(_) => {
+                        eprintln!("Interval must be greater than zero");
+                        print_usage_and_exit(&program_name);
+                    }
+                    Err(error) => {
+                        eprintln!("Invalid interval '{value}': {error}");
+                        print_usage_and_exit(&program_name);
+                    }
+                }
+            }
             _ => print_usage_and_exit(&program_name),
         }
     }
@@ -446,21 +550,28 @@ fn parse_command(args: impl IntoIterator<Item = String>) -> Command {
         print_usage_and_exit(&program_name);
     }
 
+    if ttl.is_some() && trace {
+        eprintln!("--ttl cannot be used with --trace");
+        print_usage_and_exit(&program_name);
+    }
+
     Command::Trace(ProbeConfig {
         original_target: first_arg,
         resolved_target,
         count,
         max_ttl,
         ttl,
+        trace,
         verbose,
         continuous,
         scroll,
+        interval,
     })
 }
 
 fn print_usage_and_exit(program_name: &str) -> ! {
     eprintln!(
-        "Usage: {program_name} <target> [--count <probes>] [--max-ttl <hops> | --ttl <hop>] [--verbose] [--continuous] [--scroll]"
+        "Usage: {program_name} <target> [--count <probes>] [--max-ttl <hops> | --ttl <hop>] [--trace] [--interval <seconds>] [--verbose] [--continuous] [--scroll]"
     );
     eprintln!("       {program_name} --version");
     process::exit(1);
@@ -499,9 +610,18 @@ struct ProbeConfig {
     count: u16,
     max_ttl: u8,
     ttl: Option<u8>,
+    trace: bool,
     verbose: bool,
     continuous: bool,
     scroll: bool,
+    interval: Duration,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProbeMode {
+    AutoTtl,
+    SingleTtl(u8),
+    Trace,
 }
 
 fn create_icmp_socket() -> io::Result<RawFd> {
@@ -642,8 +762,9 @@ impl HopReport {
 
 #[cfg(test)]
 mod tests {
-    use super::{Command, DEFAULT_MAX_TTL, DEFAULT_PROBE_COUNT, ProbeConfig, parse_command};
+    use super::{Command, DEFAULT_INTERVAL, DEFAULT_MAX_TTL, DEFAULT_PROBE_COUNT, ProbeConfig, parse_command};
     use std::net::Ipv4Addr;
+    use std::time::Duration;
 
     #[test]
     fn parse_command_accepts_version_flag() {
@@ -664,18 +785,21 @@ mod tests {
                 count: DEFAULT_PROBE_COUNT,
                 max_ttl: DEFAULT_MAX_TTL,
                 ttl: None,
+                trace: false,
                 verbose: false,
                 continuous: false,
                 scroll: false,
+                interval: DEFAULT_INTERVAL,
             })
         );
     }
 
     #[test]
-    fn parse_command_accepts_custom_probe_count_max_ttl_verbose_and_continuous() {
+    fn parse_command_accepts_trace_mode_with_custom_options() {
         let command = parse_command([
             String::from("mtr-rust"),
             String::from("8.8.8.8"),
+            String::from("--trace"),
             String::from("--count"),
             String::from("3"),
             String::from("--max-ttl"),
@@ -683,6 +807,8 @@ mod tests {
             String::from("--verbose"),
             String::from("--continuous"),
             String::from("--scroll"),
+            String::from("--interval"),
+            String::from("2.5"),
         ]);
 
         assert_eq!(
@@ -693,9 +819,11 @@ mod tests {
                 count: 3,
                 max_ttl: 5,
                 ttl: None,
+                trace: true,
                 verbose: true,
                 continuous: true,
                 scroll: true,
+                interval: Duration::from_secs_f64(2.5),
             })
         );
     }
@@ -720,11 +848,46 @@ mod tests {
                 count: 1,
                 max_ttl: DEFAULT_MAX_TTL,
                 ttl: Some(12),
+                trace: false,
                 verbose: true,
                 continuous: false,
                 scroll: false,
+                interval: DEFAULT_INTERVAL,
             })
         );
+    }
+
+    #[test]
+    fn parse_command_accepts_decimal_interval() {
+        let command = parse_command([
+            String::from("mtr-rust"),
+            String::from("8.8.8.8"),
+            String::from("--interval"),
+            String::from("0.5"),
+        ]);
+
+        match command {
+            Command::Trace(config) => assert_eq!(config.interval, Duration::from_secs_f64(0.5)),
+            Command::Version => panic!("expected trace command"),
+        }
+    }
+
+    #[test]
+    fn parse_command_accepts_explicit_trace_mode() {
+        let command = parse_command([
+            String::from("mtr-rust"),
+            String::from("8.8.8.8"),
+            String::from("--trace"),
+        ]);
+
+        match command {
+            Command::Trace(config) => {
+                assert!(config.trace);
+                assert_eq!(config.ttl, None);
+                assert_eq!(config.max_ttl, DEFAULT_MAX_TTL);
+            }
+            Command::Version => panic!("expected trace command"),
+        }
     }
 
     #[test]
@@ -738,9 +901,11 @@ mod tests {
                 assert_eq!(config.count, DEFAULT_PROBE_COUNT);
                 assert_eq!(config.max_ttl, DEFAULT_MAX_TTL);
                 assert_eq!(config.ttl, None);
+                assert!(!config.trace);
                 assert!(!config.verbose);
                 assert!(!config.continuous);
                 assert!(!config.scroll);
+                assert_eq!(config.interval, DEFAULT_INTERVAL);
             }
             Command::Version => panic!("expected trace command"),
         }
