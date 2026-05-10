@@ -2,7 +2,7 @@
 
 A learning-focused Rust implementation of `mtr`.
 
-The current step is a small, educational `v0.8`:
+The current step is a small, educational `v0.9`:
 
 1. Build ICMP Echo Request packets in Rust.
 2. Send repeated IPv4 ICMP probes with a raw socket on macOS.
@@ -16,6 +16,7 @@ The current step is a small, educational `v0.8`:
    including `Time Exceeded` packets that contain the embedded original probe.
 8. Accept either a hostname or an IPv4 address as the target and resolve
    hostnames to IPv4 before probing.
+9. Offer a `--continuous` mode that keeps running until you stop it.
 
 It is still intentionally limited:
 
@@ -57,6 +58,13 @@ You can choose a different probe count:
 sudo ./target/debug/mtr-rust 8.8.8.8 --count 5
 ```
 
+If you want it to keep running until you press `Ctrl+C`, use
+`--continuous`:
+
+```bash
+sudo ./target/debug/mtr-rust 8.8.8.8 --count 5 --max-ttl 5 --continuous
+```
+
 Hostnames work too, as long as they resolve to IPv4:
 
 ```bash
@@ -83,10 +91,16 @@ If you want to watch each probe while learning or debugging, use `--verbose`:
 sudo ./target/debug/mtr-rust 8.8.8.8 --count 5 --max-ttl 5 --verbose
 ```
 
+You can combine `--verbose` with `--continuous`:
+
+```bash
+sudo ./target/debug/mtr-rust 8.8.8.8 --count 5 --max-ttl 5 --verbose --continuous
+```
+
 Verbose mode prints progress lines such as:
 
 ```text
-Starting mtr-rust target=example.com resolved=93.184.216.34 count=5 max_ttl=5 timeout=1.0s
+Starting mtr-rust target=example.com resolved=93.184.216.34 count=5 max_ttl=5 timeout=1.0s mode=continuous
 Probing ttl=1 seq=1...
 Reply type=11 from 192.168.1.1 ttl=1 seq=1 matched=yes rtt=2.3ms
 Probing ttl=1 seq=2...
@@ -96,7 +110,7 @@ Timeout ttl=1 seq=2
 Example output:
 
 ```text
-Starting mtr-rust target=8.8.8.8 resolved=8.8.8.8 count=10 max_ttl=30 timeout=1.0s
+Starting mtr-rust target=8.8.8.8 resolved=8.8.8.8 count=10 max_ttl=30 timeout=1.0s mode=once
 Hop  Host            Loss%  Sent  Recv  Last   Avg   Best   Wrst
 1    192.168.1.1      0.0%    10    10    2.1    2.3    1.8    4.9
 2    10.0.0.1        10.0%    10     9    8.2    9.1    7.8   13.4
@@ -114,6 +128,8 @@ Hop  Host            Loss%  Sent  Recv  Last   Avg   Best   Wrst
    parsing.
 8. `v0.8`: Resolve hostnames to IPv4 and display both original and resolved
    targets.
-9. Next: Refresh the table continuously instead of printing it once.
-10. Later: Add reverse DNS lookups as an optional display feature.
-11. Later: Grow that into a small, readable `mtr` implementation.
+9. `v0.9`: Add a continuous probing mode for ping-like repeated sweeps.
+10. Next: Refresh the table in place instead of printing a new snapshot each
+    sweep.
+11. Later: Add reverse DNS lookups as an optional display feature.
+12. Later: Grow that into a small, readable `mtr` implementation.

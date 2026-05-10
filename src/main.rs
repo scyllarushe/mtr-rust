@@ -25,12 +25,13 @@ fn main() {
 
 fn run_trace(config: ProbeConfig) {
     println!(
-        "Starting mtr-rust target={} resolved={} count={} max_ttl={} timeout={:.1}s",
+        "Starting mtr-rust target={} resolved={} count={} max_ttl={} timeout={:.1}s mode={}",
         config.original_target,
         config.resolved_target,
         config.count,
         config.max_ttl,
-        PER_PROBE_TIMEOUT.as_secs_f64()
+        PER_PROBE_TIMEOUT.as_secs_f64(),
+        if config.continuous { "continuous" } else { "once" }
     );
 
     let socket_fd = match create_icmp_socket() {
@@ -41,7 +42,11 @@ fn run_trace(config: ProbeConfig) {
         }
     };
 
-    let trace_result = collect_hop_reports(socket_fd, &config);
+    let trace_result = if config.continuous {
+        run_continuous_trace(socket_fd, &config).map(|_| None)
+    } else {
+        collect_hop_reports(socket_fd, &config).map(Some)
+    };
 
     let close_result = unsafe { libc::close(socket_fd) };
     if close_result != 0 {
@@ -51,7 +56,8 @@ fn run_trace(config: ProbeConfig) {
     }
 
     match trace_result {
-        Ok(reports) => print_hop_table(&reports),
+        Ok(Some(reports)) => print_hop_table(&reports),
+        Ok(None) => {}
         Err(error) => {
             eprintln!("{error}");
             process::exit(1);
@@ -60,62 +66,91 @@ fn run_trace(config: ProbeConfig) {
 }
 
 fn collect_hop_reports(socket_fd: RawFd, config: &ProbeConfig) -> io::Result<Vec<HopReport>> {
+    let mut reports = (1..=config.max_ttl).map(HopReport::new).collect::<Vec<_>>();
+    let mut next_sequence = 1u16;
+
+    run_probe_sweep(socket_fd, config, &mut reports, &mut next_sequence)?;
+    truncate_after_target(&mut reports, config.resolved_target);
+
+    Ok(reports)
+}
+
+fn run_continuous_trace(socket_fd: RawFd, config: &ProbeConfig) -> io::Result<()> {
+    let mut reports = (1..=config.max_ttl).map(HopReport::new).collect::<Vec<_>>();
+    let mut next_sequence = 1u16;
+
+    loop {
+        run_probe_sweep(socket_fd, config, &mut reports, &mut next_sequence)?;
+
+        let mut visible_reports = reports.clone();
+        truncate_after_target(&mut visible_reports, config.resolved_target);
+        println!();
+        print_hop_table(&visible_reports);
+    }
+}
+
+fn run_probe_sweep(
+    socket_fd: RawFd,
+    config: &ProbeConfig,
+    reports: &mut [HopReport],
+    next_sequence: &mut u16,
+) -> io::Result<()> {
     let identifier = process::id() as u16;
     let destination = ipv4_sockaddr(config.resolved_target);
-    let mut next_sequence = 1u16;
-    let mut reports = Vec::new();
 
-    for ttl in 1..=config.max_ttl {
+    for report in reports.iter_mut() {
+        let ttl = report.ttl;
         set_socket_ttl(socket_fd, ttl)?;
 
-        let mut report = HopReport::new(ttl);
         let mut reached_target = false;
 
         for _ in 0..config.count {
             report.statistics.record_probe_sent();
             if config.verbose {
-                eprintln!("Probing ttl={ttl} seq={next_sequence}...");
+                eprintln!("Probing ttl={ttl} seq={}...", *next_sequence);
             }
 
-            let packet = EchoRequest::new(identifier, next_sequence, b"mtr-rust".to_vec()).to_bytes();
+            let packet = EchoRequest::new(identifier, *next_sequence, b"mtr-rust".to_vec()).to_bytes();
             let started_at = Instant::now();
 
             send_icmp_echo_request(socket_fd, &destination, &packet, config.resolved_target)?;
 
-            if let Some(reply) =
-                receive_matching_reply(
-                    socket_fd,
-                    ttl,
-                    identifier,
-                    next_sequence,
-                    started_at,
-                    config.resolved_target,
-                    config.verbose,
-                )?
-            {
+            if let Some(reply) = receive_matching_reply(
+                socket_fd,
+                ttl,
+                identifier,
+                *next_sequence,
+                started_at,
+                config.resolved_target,
+                config.verbose,
+            )? {
                 report.record_reply(reply.source_ip, reply.rtt);
 
                 if reply.icmp_type == ECHO_REPLY_TYPE && reply.source_ip == config.resolved_target {
                     reached_target = true;
                 }
             } else if config.verbose {
-                eprintln!("Timeout ttl={ttl} seq={next_sequence}");
+                eprintln!("Timeout ttl={ttl} seq={}", *next_sequence);
             }
 
-            next_sequence = next_sequence.wrapping_add(1);
-            if next_sequence == 0 {
-                next_sequence = 1;
+            *next_sequence = next_sequence.wrapping_add(1);
+            if *next_sequence == 0 {
+                *next_sequence = 1;
             }
         }
-
-        reports.push(report);
 
         if reached_target {
             break;
         }
     }
 
-    Ok(reports)
+    Ok(())
+}
+
+fn truncate_after_target(reports: &mut Vec<HopReport>, target: Ipv4Addr) {
+    if let Some(target_index) = reports.iter().position(|report| report.host == Some(target)) {
+        reports.truncate(target_index + 1);
+    }
 }
 
 fn send_icmp_echo_request(
@@ -289,6 +324,7 @@ fn parse_command(args: impl IntoIterator<Item = String>) -> Command {
     let mut count = DEFAULT_PROBE_COUNT;
     let mut max_ttl = DEFAULT_MAX_TTL;
     let mut verbose = false;
+    let mut continuous = false;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -329,6 +365,7 @@ fn parse_command(args: impl IntoIterator<Item = String>) -> Command {
                 }
             }
             "--verbose" => verbose = true,
+            "--continuous" => continuous = true,
             _ => print_usage_and_exit(&program_name),
         }
     }
@@ -339,12 +376,13 @@ fn parse_command(args: impl IntoIterator<Item = String>) -> Command {
         count,
         max_ttl,
         verbose,
+        continuous,
     })
 }
 
 fn print_usage_and_exit(program_name: &str) -> ! {
     eprintln!(
-        "Usage: {program_name} <target> [--count <probes>] [--max-ttl <hops>] [--verbose]"
+        "Usage: {program_name} <target> [--count <probes>] [--max-ttl <hops>] [--verbose] [--continuous]"
     );
     eprintln!("       {program_name} --version");
     process::exit(1);
@@ -383,6 +421,7 @@ struct ProbeConfig {
     count: u16,
     max_ttl: u8,
     verbose: bool,
+    continuous: bool,
 }
 
 fn create_icmp_socket() -> io::Result<RawFd> {
@@ -490,6 +529,7 @@ struct MatchedReply {
     rtt: Duration,
 }
 
+#[derive(Clone)]
 struct HopReport {
     ttl: u8,
     host: Option<Ipv4Addr>,
@@ -544,12 +584,13 @@ mod tests {
                 count: DEFAULT_PROBE_COUNT,
                 max_ttl: DEFAULT_MAX_TTL,
                 verbose: false,
+                continuous: false,
             })
         );
     }
 
     #[test]
-    fn parse_command_accepts_custom_probe_count_max_ttl_and_verbose() {
+    fn parse_command_accepts_custom_probe_count_max_ttl_verbose_and_continuous() {
         let command = parse_command([
             String::from("mtr-rust"),
             String::from("8.8.8.8"),
@@ -558,6 +599,7 @@ mod tests {
             String::from("--max-ttl"),
             String::from("5"),
             String::from("--verbose"),
+            String::from("--continuous"),
         ]);
 
         assert_eq!(
@@ -568,6 +610,7 @@ mod tests {
                 count: 3,
                 max_ttl: 5,
                 verbose: true,
+                continuous: true,
             })
         );
     }
@@ -583,6 +626,7 @@ mod tests {
                 assert_eq!(config.count, DEFAULT_PROBE_COUNT);
                 assert_eq!(config.max_ttl, DEFAULT_MAX_TTL);
                 assert!(!config.verbose);
+                assert!(!config.continuous);
             }
             Command::Version => panic!("expected trace command"),
         }
